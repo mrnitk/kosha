@@ -1,0 +1,24 @@
+# Kosha — dependencies
+# NOTE: README targets Python 3.12 + sqlcipher3-binary. On this machine only
+# Python 3.14 is available and sqlcipher3-binary has no Windows wheels, so we
+# use sqlcipher3-wheels (ships a native cp314 win_amd64 SQLCipher build) and
+# PySide6's stable-ABI wheel. Same import name: `sqlcipher3`.
+
+# --- Encryption / DB ---
+sqlcipher3-wheels==0.5.7
+argon2-cffi==25.1.0
+
+# --- UI (Phase 4) ---
+PySide6==6.11.1
+
+# --- Parsing (Phase 2+) ---
+pandas==2.3.3
+openpyxl==3.1.5
+xlrd==2.0.2            # legacy .xls statement files
+pdfplumber==0.11.7
+
+# --- Charts (Phase 4) ---
+plotly==6.3.1
+
+# --- Dev / test ---
+pytest==8.4.2

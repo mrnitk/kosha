@@ -1,0 +1,32 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Kosha data (NEVER commit) ---
+# Encrypted DB, salt files, backups, and any real statements.
+*.db
+*.db-*
+*.salt
+data/
+*.kosha
+
+# Real financial statements. The sanitized Sample/ folder is intentionally kept.
+statements/
+
+# --- Build artifacts ---
+build/
+dist/
+*.spec.bak
+
+# --- OS / editor ---
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# --- scratch ---
+scratchpad/
+_wheeltest*/

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(py -0)",
+      "Bash(where python *)",
+      "Bash(python -m pip download --no-deps --only-binary=:all: PySide6 -d ./_wheeltest)",
+      "Bash(python -m pip download --no-deps --only-binary=:all: sqlcipher3-binary -d ./_wheeltest2)",
+      "Bash(python -m pip download --no-deps --only-binary=:all: sqlcipher3-wheels -d ./_wheeltest3)",
+      "Bash(git init *)",
+      "Bash(python -m venv .venv)",
+      "Bash(.venv/Scripts/python.exe -m pip install --quiet --upgrade pip sqlcipher3-wheels==0.5.7 argon2-cffi==25.1.0)",
+      "Bash(\"D:/Claude Builds/Kosha - The expense tracker/.venv/Scripts/python.exe\" -)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(.venv/Scripts/python.exe -m pip install --quiet pytest==8.4.2)",
+      "Bash(git add *)"
+    ]
+  }
+}
