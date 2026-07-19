@@ -47,3 +47,24 @@ CREATE INDEX IF NOT EXISTS idx_txn_date        ON transactions(txn_date);
 CREATE INDEX IF NOT EXISTS idx_txn_account     ON transactions(account_id);
 CREATE INDEX IF NOT EXISTS idx_txn_keyword     ON transactions(merchant_keyword);
 CREATE INDEX IF NOT EXISTS idx_rules_keyword   ON category_rules(keyword);
+
+-- Effective category resolution, evaluated live so new/edited rules apply
+-- retroactively to all history with no data rewrite:
+--   COALESCE(manual override, best matching rule, 'Uncategorized')
+-- "best matching rule" = highest priority for a keyword, newest id breaks ties.
+CREATE VIEW IF NOT EXISTS v_transactions_resolved AS
+SELECT
+    t.id, t.txn_date, t.raw_description, t.amount, t.direction,
+    t.account_id, t.txn_type, t.merchant_keyword,
+    t.category_override, t.sub_category_override,
+    t.import_batch_id, t.dedup_hash,
+    COALESCE(t.category_override, br.category, 'Uncategorized') AS effective_category,
+    COALESCE(t.sub_category_override, br.sub_category)          AS effective_sub_category
+FROM transactions t
+LEFT JOIN (
+    SELECT keyword, category, sub_category FROM (
+        SELECT keyword, category, sub_category,
+               ROW_NUMBER() OVER (PARTITION BY keyword ORDER BY priority DESC, id DESC) AS rn
+        FROM category_rules
+    ) WHERE rn = 1
+) br ON br.keyword = t.merchant_keyword;

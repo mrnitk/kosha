@@ -20,7 +20,7 @@ import sqlcipher3
 
 from . import config, crypto
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class WrongPasswordError(Exception):

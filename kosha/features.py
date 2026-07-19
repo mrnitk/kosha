@@ -65,10 +65,18 @@ def derive_txn_type(narration: str) -> str:
     return OTHER
 
 
-def _normalize(text: str) -> str:
-    """Uppercase, collapse whitespace, trim edge punctuation."""
+def normalize_keyword(text: str) -> str:
+    """Uppercase, collapse whitespace, trim edge punctuation.
+
+    The canonical form for both extracted merchant keywords and user-entered
+    rule keywords, so a rule matches the transactions the user saw it on.
+    """
     text = re.sub(r"\s+", " ", text).strip().upper()
     return text.strip(" .,-/@")
+
+
+# Internal alias kept for the existing call sites in this module.
+_normalize = normalize_keyword
 
 
 def derive_merchant_keyword(narration: str, txn_type: str) -> str | None:
