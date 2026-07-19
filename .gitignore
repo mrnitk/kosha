@@ -13,8 +13,10 @@ __pycache__/
 data/
 *.kosha
 
-# Real financial statements. The sanitized Sample/ folder is intentionally kept.
+# Real financial statements — including the Sample/ fixtures, whose rows are
+# real transaction data. Kept on disk for parser testing, never committed.
 statements/
+Sample/
 
 # --- Build artifacts ---
 build/
