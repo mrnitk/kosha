@@ -12,23 +12,37 @@ from __future__ import annotations
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from .format import format_inr
+
 # Brand-neutral qualitative palette (accessible, distinct in light and dark).
 _PALETTE = [
     "#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2",
     "#EECA3B", "#B279A2", "#FF9DA6", "#9D755D", "#BAB0AC",
 ]
 
-def _layout(template: str = "plotly_white", **extra) -> dict:
+def _layout(title: str = "", template: str = "plotly_white", **extra) -> dict:
+    # Title is pinned to the very top and the legend sits *below* the plot, so
+    # neither overlaps the plotting area (the header used to sit on the chart).
     base = dict(
         template=template,
-        margin=dict(l=60, r=20, t=48, b=48),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        title=dict(text=title, x=0.02, xanchor="left", y=0.97, yanchor="top"),
+        margin=dict(l=64, r=24, t=64, b=72),
+        legend=dict(orientation="h", yanchor="top", y=-0.18, x=0),
         font=dict(size=12),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
     )
     base.update(extra)
     return base
+
+
+def _inr_hover(y_values, name: str = "") -> dict:
+    """Trace kwargs giving an Indian-formatted amount in the hover tooltip."""
+    tail = f"<extra>{name}</extra>" if name else "<extra></extra>"
+    return dict(
+        customdata=[format_inr(v) for v in y_values],
+        hovertemplate="%{x}<br>₹%{customdata}" + tail,
+    )
 
 
 def color_map(categories) -> dict[str, str]:
@@ -47,9 +61,10 @@ def spend_stacked_bar(rows, granularity: str = "month", template: str = "plotly_
 
     fig = go.Figure()
     for sub in subs:
-        fig.add_bar(name=sub, x=periods, y=[by_sub[sub][p] for p in periods], marker_color=cmap[sub])
-    fig.update_layout(barmode="stack", title=f"Expense by sub-category ({granularity})", **_layout(template))
-    fig.update_yaxes(title="Amount")
+        y = [by_sub[sub][p] for p in periods]
+        fig.add_bar(name=sub, x=periods, y=y, marker_color=cmap[sub], **_inr_hover(y, sub))
+    fig.update_layout(**_layout(f"Expense by sub-category ({granularity})", template, barmode="stack"))
+    fig.update_yaxes(title="Amount (₹)")
     return fig
 
 
@@ -62,19 +77,21 @@ def income_expense_line(rows, template: str = "plotly_white") -> go.Figure:
     rate = [r[4] for r in rows]
 
     fig = go.Figure()
-    fig.add_bar(name="Income", x=periods, y=income, marker_color="#54A24B")
-    fig.add_bar(name="Expense", x=periods, y=expense, marker_color="#E45756")
-    fig.add_bar(name="Savings", x=periods, y=savings, marker_color="#4C78A8")
+    fig.add_bar(name="Income", x=periods, y=income, marker_color="#54A24B", **_inr_hover(income, "Income"))
+    fig.add_bar(name="Expense", x=periods, y=expense, marker_color="#E45756", **_inr_hover(expense, "Expense"))
+    fig.add_bar(name="Savings / Investments", x=periods, y=savings, marker_color="#4C78A8",
+                **_inr_hover(savings, "Savings / Investments"))
     fig.add_scatter(
         name="Savings rate %", x=periods, y=rate, yaxis="y2",
         mode="lines+markers", line=dict(color="#EECA3B", width=2),
+        hovertemplate="%{x}<br>%{y:.1f}%<extra>Savings rate</extra>",
     )
-    fig.update_layout(
-        barmode="group", title="Income vs expense vs savings",
-        yaxis=dict(title="Amount"),
+    fig.update_layout(**_layout(
+        "Income vs expense vs savings", template,
+        barmode="group",
+        yaxis=dict(title="Amount (₹)"),
         yaxis2=dict(title="Savings %", overlaying="y", side="right", showgrid=False),
-        **_layout(template),
-    )
+    ))
     return fig
 
 
@@ -86,8 +103,10 @@ def category_pie(rows, title: str = "Expense share by sub-category", template: s
     fig = go.Figure(go.Pie(
         labels=labels, values=values, hole=0.5,
         marker=dict(colors=[cmap[l] for l in labels]),
+        customdata=[format_inr(v) for v in values],
+        hovertemplate="%{label}<br>₹%{customdata} (%{percent})<extra></extra>",
     ))
-    fig.update_layout(title=title, **_layout(template))
+    fig.update_layout(**_layout(title, template))
     return fig
 
 
@@ -95,9 +114,13 @@ def top_merchants_bar(rows, template: str = "plotly_white") -> go.Figure:
     """Horizontal bar of top merchants by spend."""
     merchants = [r[0] for r in rows][::-1]   # largest on top
     totals = [r[1] for r in rows][::-1]
-    fig = go.Figure(go.Bar(x=totals, y=merchants, orientation="h", marker_color="#4C78A8"))
-    fig.update_layout(title="Top merchants by spend", **_layout(template))
-    fig.update_xaxes(title="Amount")
+    fig = go.Figure(go.Bar(
+        x=totals, y=merchants, orientation="h", marker_color="#4C78A8",
+        customdata=[format_inr(v) for v in totals],
+        hovertemplate="%{y}<br>₹%{customdata}<extra></extra>",
+    ))
+    fig.update_layout(**_layout("Top merchants by spend", template))
+    fig.update_xaxes(title="Amount (₹)")
     return fig
 
 

@@ -155,6 +155,36 @@ class BulkResult:
         return "\n".join(lines)
 
 
+def clear_data(db: Database, scope: str = "transactions") -> int:
+    """Wipe imported data for a fresh start. Returns the transaction count removed.
+
+    ``scope``:
+        * ``"transactions"`` — delete transactions + import batches, but keep your
+          categorization rules and accounts, so a re-import re-applies them.
+        * ``"all"`` — full reset: also drop accounts and category rules.
+
+    Irreversible. Runs as one transaction, then reclaims file space with VACUUM.
+    """
+    if scope not in ("transactions", "all"):
+        raise ValueError(f"unknown scope {scope!r}")
+    con = db.connection
+    n = con.execute("SELECT count(*) FROM transactions").fetchone()[0]
+    try:
+        con.execute("DELETE FROM transactions")
+        con.execute("DELETE FROM import_batches")
+        if scope == "all":
+            con.execute("DELETE FROM category_rules")
+            con.execute("DELETE FROM accounts")
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    # VACUUM can't run inside a transaction; sqlcipher3 auto-opens one, so commit
+    # first (done above) then reclaim space outside it.
+    con.execute("VACUUM")
+    return n
+
+
 def import_paths(db: Database, paths) -> BulkResult:
     """Bulk-import many statement files, auto-filing each by institution.
 

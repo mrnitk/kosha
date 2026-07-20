@@ -30,7 +30,24 @@ from .db import Database
 INCOME = "Income"
 EXPENSE = "Expense"
 SAVINGS = "Savings"
-CATEGORIES = (INCOME, EXPENSE, SAVINGS)
+TRANSFER = "Transfer"
+CATEGORIES = (INCOME, EXPENSE, SAVINGS, TRANSFER)
+
+# Canonical value -> label shown in the UI. Stored values stay stable keys; only
+# the presentation changes. 'Transfer' covers credit-card bill payments and
+# self-transfers — kept out of the income/expense/savings math to avoid
+# double-counting spend that's already in the card statement.
+DISPLAY_LABELS = {
+    INCOME: "Income",
+    EXPENSE: "Expense",
+    SAVINGS: "Savings / Investments",
+    TRANSFER: "Credit Card Payment / Transfer",
+}
+
+
+def display_label(category: str) -> str:
+    """Human-facing label for a canonical category value."""
+    return DISPLAY_LABELS.get(category, category)
 
 
 def default_category(direction: str) -> str:
@@ -41,14 +58,19 @@ def default_category(direction: str) -> str:
 def normalize_category(text: Optional[str]) -> str:
     """Coerce free text to one of the canonical categories.
 
-    Tolerates the values an earlier build let users type (e.g. 'Saving').
+    Tolerates the values an earlier build let users type (e.g. 'Saving') and the
+    display labels ('Savings / Investments', 'Credit Card Payment / Transfer').
     Unrecognized input falls back to Expense.
     """
     key = (text or "").strip().lower()
     if key in ("income", "credit"):
         return INCOME
-    if key in ("savings", "saving", "invest", "investment"):
+    if key in ("savings", "saving", "invest", "investment",
+               "savings / investments", "savings/investments"):
         return SAVINGS
+    if key in ("transfer", "credit card payment", "card payment", "cc payment",
+               "credit card payment / transfer"):
+        return TRANSFER
     return EXPENSE
 
 
@@ -59,6 +81,7 @@ class Rule:
     category: str
     sub_category: Optional[str]
     priority: int
+    excluded: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,6 +106,7 @@ def add_rule(
     category: str,
     sub_category: Optional[str] = None,
     priority: int = 0,
+    excluded: bool = False,
 ) -> int:
     """Create (or update in place) the rule for ``keyword``. Returns the rule id.
 
@@ -94,19 +118,20 @@ def add_rule(
         raise ValueError("keyword is empty after normalization")
     category = normalize_category(category)
     sub_category = sub_category.strip() if sub_category and sub_category.strip() else None
+    exc = 1 if excluded else 0
 
     con = db.connection
     existing = con.execute("SELECT id FROM category_rules WHERE keyword = ?", (norm,)).fetchone()
     if existing:
         con.execute(
-            "UPDATE category_rules SET category=?, sub_category=?, priority=? WHERE id=?",
-            (category, sub_category, priority, existing[0]),
+            "UPDATE category_rules SET category=?, sub_category=?, priority=?, excluded=? WHERE id=?",
+            (category, sub_category, priority, exc, existing[0]),
         )
         con.commit()
         return existing[0]
     cur = con.execute(
-        "INSERT INTO category_rules(keyword, category, sub_category, priority) VALUES (?,?,?,?)",
-        (norm, category, sub_category, priority),
+        "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded) VALUES (?,?,?,?,?)",
+        (norm, category, sub_category, priority, exc),
     )
     con.commit()
     return cur.lastrowid
@@ -118,6 +143,7 @@ def assign_many(
     category: str,
     sub_category: Optional[str] = None,
     priority: int = 0,
+    excluded: bool = False,
 ) -> int:
     """Bulk-assign the same category/sub-category to several keywords.
 
@@ -125,6 +151,7 @@ def assign_many(
     """
     category = normalize_category(category)
     sub = sub_category.strip() if sub_category and sub_category.strip() else None
+    exc = 1 if excluded else 0
     con = db.connection
     count = 0
     try:
@@ -135,13 +162,52 @@ def assign_many(
             existing = con.execute("SELECT id FROM category_rules WHERE keyword=?", (norm,)).fetchone()
             if existing:
                 con.execute(
-                    "UPDATE category_rules SET category=?, sub_category=?, priority=? WHERE id=?",
-                    (category, sub, priority, existing[0]),
+                    "UPDATE category_rules SET category=?, sub_category=?, priority=?, excluded=? WHERE id=?",
+                    (category, sub, priority, exc, existing[0]),
                 )
             else:
                 con.execute(
-                    "INSERT INTO category_rules(keyword, category, sub_category, priority) VALUES (?,?,?,?)",
-                    (norm, category, sub, priority),
+                    "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded) VALUES (?,?,?,?,?)",
+                    (norm, category, sub, priority, exc),
+                )
+            count += 1
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return count
+
+
+def set_excluded_keywords(db: Database, keywords: list[str], excluded: bool) -> int:
+    """Flip the exclude flag on one or many keywords (creating a rule if needed).
+
+    Excluding a keyword hides all its transactions from every visual and the
+    drill-down table. Returns the number of keywords touched. A keyword with no
+    rule yet gets a minimal rule carrying its direction-default category.
+    """
+    exc = 1 if excluded else 0
+    con = db.connection
+    count = 0
+    try:
+        for kw in keywords:
+            norm = features.normalize_keyword(kw)
+            if not norm:
+                continue
+            existing = con.execute("SELECT id FROM category_rules WHERE keyword=?", (norm,)).fetchone()
+            if existing:
+                con.execute("UPDATE category_rules SET excluded=? WHERE id=?", (exc, existing[0]))
+            else:
+                dom = con.execute(
+                    "SELECT CASE WHEN SUM(CASE WHEN direction='credit' THEN 1 ELSE 0 END) "
+                    "> SUM(CASE WHEN direction='debit' THEN 1 ELSE 0 END) THEN 'credit' ELSE 'debit' END "
+                    "FROM transactions WHERE merchant_keyword=?",
+                    (norm,),
+                ).fetchone()
+                direction = (dom[0] if dom and dom[0] else "debit")
+                con.execute(
+                    "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded) "
+                    "VALUES (?,?,?,?,?)",
+                    (norm, default_category(direction), None, 0, exc),
                 )
             count += 1
         con.commit()
@@ -183,10 +249,10 @@ def delete_rule(db: Database, rule_id: int) -> None:
 
 def list_rules(db: Database) -> list[Rule]:
     rows = db.connection.execute(
-        "SELECT id, keyword, category, sub_category, priority "
+        "SELECT id, keyword, category, sub_category, priority, COALESCE(excluded, 0) "
         "FROM category_rules ORDER BY category, keyword"
     ).fetchall()
-    return [Rule(*row) for row in rows]
+    return [Rule(id_, kw, cat_, sub, pri, bool(exc)) for id_, kw, cat_, sub, pri, exc in rows]
 
 
 # --- manual per-transaction overrides ----------------------------------------
@@ -212,14 +278,24 @@ def clear_override(db: Database, txn_id: int) -> None:
     con.commit()
 
 
+def set_excluded(db: Database, txn_id: int, excluded: Optional[bool]) -> None:
+    """Force a single transaction's exclude state (``None`` = inherit its rule)."""
+    con = db.connection
+    val = None if excluded is None else (1 if excluded else 0)
+    con.execute("UPDATE transactions SET excluded_override=? WHERE id=?", (val, txn_id))
+    con.commit()
+
+
 # --- review queries ----------------------------------------------------------
 
 def unreviewed_keywords(db: Database) -> list[KeywordSpend]:
-    """Keywords not yet given a sub-category, ranked by total amount.
+    """Keywords not yet handled, ranked by total amount.
 
     Every transaction already has a category by direction, so review is about
     assigning the descriptive sub-category (and optionally reclassifying to
-    Savings). A keyword is reviewed once a rule gives it a sub_category.
+    Savings). A keyword counts as handled once a rule gives it a sub_category,
+    marks it excluded, or reclassifies it to Transfer — any of which means the
+    user has made a deliberate decision about it.
     """
     rows = db.connection.execute(
         """
@@ -234,7 +310,10 @@ def unreviewed_keywords(db: Database) -> list[KeywordSpend]:
         WHERE t.merchant_keyword IS NOT NULL AND t.merchant_keyword <> ''
           AND NOT EXISTS (
               SELECT 1 FROM category_rules r
-              WHERE r.keyword = t.merchant_keyword AND r.sub_category IS NOT NULL
+              WHERE r.keyword = t.merchant_keyword
+                AND (r.sub_category IS NOT NULL
+                     OR COALESCE(r.excluded, 0) = 1
+                     OR r.category = 'Transfer')
           )
         GROUP BY t.merchant_keyword
         ORDER BY total DESC, n DESC
@@ -276,6 +355,35 @@ def category_totals(db: Database, direction: Optional[str] = None) -> list[tuple
                "GROUP BY effective_category ORDER BY SUM(amount) DESC")
         rows = db.connection.execute(sql).fetchall()
     return [(c, total, n) for c, total, n in rows]
+
+
+def subcategory_totals(db: Database) -> list[tuple[str, str, float, int]]:
+    """(category, sub_category, total_amount, txn_count) using live resolution.
+
+    Spans every category; unassigned sub-categories surface as 'Unassigned'.
+    Excluded transactions are left out (they're hidden everywhere).
+    """
+    rows = db.connection.execute(
+        """
+        SELECT effective_category,
+               COALESCE(effective_sub_category, 'Unassigned') AS sub,
+               SUM(amount), COUNT(*)
+        FROM v_transactions_resolved
+        WHERE COALESCE(effective_excluded, 0) = 0
+        GROUP BY effective_category, sub
+        ORDER BY SUM(amount) DESC
+        """
+    ).fetchall()
+    return [(c, s, total, n) for c, s, total, n in rows]
+
+
+def data_summary(db: Database) -> tuple[Optional[str], Optional[str], int]:
+    """(min_date, max_date, txn_count) for the 'what data do I have' readout."""
+    row = db.connection.execute(
+        "SELECT MIN(txn_date), MAX(txn_date), COUNT(*) FROM transactions"
+    ).fetchone()
+    lo, hi, n = row if row else (None, None, 0)
+    return lo, hi, (n or 0)
 
 
 def distinct_sub_categories(db: Database) -> list[str]:

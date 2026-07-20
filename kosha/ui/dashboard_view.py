@@ -19,8 +19,9 @@ from PySide6.QtWidgets import (
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .. import analytics, charts
+from .. import analytics, categorization, charts
 from ..db import Database
+from ..format import format_inr
 
 
 class DashboardView(QWidget):
@@ -76,8 +77,12 @@ class DashboardView(QWidget):
         self._granularity = QComboBox()
         self._granularity.addItems(analytics.GRANULARITIES)
 
-        self._category = QComboBox()   # 'All' + each category
-        self._category.addItem("All categories")
+        self._category = QComboBox()   # 'All' + each category (canonical in userData)
+        self._category.addItem("All categories", None)
+        self._category.currentIndexChanged.connect(self._on_category_changed)
+
+        self._sub_category = QComboBox()   # 'All' + sub-categories of the chosen category
+        self._sub_category.addItem("All sub-categories", None)
 
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self.refresh)
@@ -86,6 +91,7 @@ class DashboardView(QWidget):
         bar.addWidget(QLabel("To")); bar.addWidget(self._end)
         bar.addWidget(QLabel("By")); bar.addWidget(self._granularity)
         bar.addWidget(self._category)
+        bar.addWidget(self._sub_category)
         bar.addWidget(apply_btn)
         bar.addStretch(1)
         return bar
@@ -101,25 +107,46 @@ class DashboardView(QWidget):
         self._reload_categories()
 
     def _reload_categories(self) -> None:
-        current = self._category.currentText()
+        current = self._category.currentData()
         self._category.blockSignals(True)
         self._category.clear()
-        self._category.addItem("All categories")
+        self._category.addItem("All categories", None)
         for cat, _total, _n in analytics.category_totals(self._db, analytics.Filter()):
-            self._category.addItem(cat)
-        idx = self._category.findText(current)
+            self._category.addItem(categorization.display_label(cat), cat)
+        idx = self._category.findData(current)
         self._category.setCurrentIndex(idx if idx >= 0 else 0)
         self._category.blockSignals(False)
+        self._reload_sub_categories()
+
+    def _reload_sub_categories(self) -> None:
+        """Populate sub-categories for the chosen category (cascades)."""
+        current = self._sub_category.currentData()
+        category = self._category.currentData()
+        self._sub_category.blockSignals(True)
+        self._sub_category.clear()
+        self._sub_category.addItem("All sub-categories", None)
+        for sub in analytics.distinct_sub_categories(self._db, category):
+            self._sub_category.addItem(sub, sub)
+        idx = self._sub_category.findData(current)
+        self._sub_category.setCurrentIndex(idx if idx >= 0 else 0)
+        self._sub_category.blockSignals(False)
+
+    def _on_category_changed(self, _idx: int) -> None:
+        self._reload_sub_categories()
 
     def current_filter(self) -> analytics.Filter:
         s = self._start.date(); e = self._end.date()
         categories: tuple[str, ...] = ()
-        if self._category.currentIndex() > 0:
-            categories = (self._category.currentText(),)
+        if self._category.currentData() is not None:
+            categories = (self._category.currentData(),)
+        sub_categories: tuple[str, ...] = ()
+        if self._sub_category.currentData() is not None:
+            sub_categories = (self._sub_category.currentData(),)
         return analytics.Filter(
             start=date(s.year(), s.month(), s.day()),
             end=date(e.year(), e.month(), e.day()),
             categories=categories,
+            sub_categories=sub_categories,
         )
 
     def granularity(self) -> str:
@@ -171,7 +198,8 @@ class DashboardView(QWidget):
         self._table.setRowCount(len(rows))
         for r, (txn_date, desc, amount, direction, txn_type, _kw, category) in enumerate(rows):
             cells = [
-                txn_date, desc, f"{amount:,.2f}", direction, txn_type or "", category,
+                txn_date, desc, format_inr(amount), direction, txn_type or "",
+                categorization.display_label(category),
             ]
             for c, val in enumerate(cells):
                 item = QTableWidgetItem(str(val))

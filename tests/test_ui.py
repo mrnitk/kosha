@@ -92,6 +92,69 @@ def test_keyword_detail_shows_transactions(tmp_path):
     db.lock()
 
 
+def test_filter_box_narrows_keywords(tmp_path):
+    db = _make_db(tmp_path)
+    view = CategorizationView(db)
+    assert view._table.rowCount() == 3
+    view._filter_text.setText("swig")          # case-insensitive substring
+    assert view._table.rowCount() == 1
+    assert view._table.item(0, 0).text() == "SWIGGY LIMITED"
+    view._filter_text.clear()
+    assert view._table.rowCount() == 3
+    db.lock()
+
+
+def test_filter_by_category_dropdown(tmp_path):
+    db = _make_db(tmp_path)
+    view = CategorizationView(db)
+    idx = view._filter_category.findData("Income")
+    view._filter_category.setCurrentIndex(idx)
+    # Only ACME EMPLOYER (a credit) defaults to Income.
+    assert view._table.rowCount() == 1
+    assert view._table.item(0, 0).text() == "ACME EMPLOYER"
+    db.lock()
+
+
+def test_assign_with_exclude_flag(tmp_path):
+    db = _make_db(tmp_path)
+    view = CategorizationView(db)
+    view.assign("SWIGGY LIMITED", "Expense", "Food", excluded=True)
+    rule = {r.keyword: r for r in cat.list_rules(db)}["SWIGGY LIMITED"]
+    assert rule.excluded is True
+    db.lock()
+
+
+def test_category_column_renamed(tmp_path):
+    db = _make_db(tmp_path)
+    view = CategorizationView(db)
+    assert view._table.horizontalHeaderItem(3).text() == "Category"
+    db.lock()
+
+
+def test_sub_category_totals_and_data_summary_present(tmp_path):
+    db = _make_db(tmp_path)
+    view = CategorizationView(db)
+    cat.add_rule(db, "SWIGGY LIMITED", "Expense", "Food")
+    view.refresh()
+    subs = [
+        (view._sub_totals.item(r, 0).text(), view._sub_totals.item(r, 1).text())
+        for r in range(view._sub_totals.rowCount())
+    ]
+    assert ("Expense", "Food") in subs
+    assert "2026-04-01" in view._data_summary.text()
+    db.lock()
+
+
+def test_main_window_has_clear_action(tmp_path):
+    db = _make_db(tmp_path)
+    win = MainWindow(db)
+    file_menu = next(m for m in win.menuBar().findChildren(type(win.menuBar().addMenu("x")))
+                     if "File" in m.title())
+    labels = [a.text() for a in file_menu.actions()]
+    assert any("Clear all data" in t for t in labels)
+    win.close()
+
+
 def test_main_window_status_and_theme(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)

@@ -54,6 +54,10 @@ class MainWindow(QMainWindow):
         import_action.triggered.connect(self._import_dialog)
         file_menu.addAction(import_action)
 
+        clear_action = QAction("&Clear all data…", self)
+        clear_action.triggered.connect(self._clear_data_dialog)
+        file_menu.addAction(clear_action)
+
         file_menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")
@@ -109,6 +113,39 @@ class MainWindow(QMainWindow):
 
         box = QMessageBox.warning if (result.unrecognized or result.failed) else QMessageBox.information
         box(self, "Import complete", result.summary())
+
+    def _clear_data_dialog(self) -> None:
+        """Confirm and wipe data for a fresh start. Irreversible."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Clear all data")
+        box.setText("This permanently deletes data from this vault and cannot be undone.")
+        box.setInformativeText(
+            "Delete transactions — removes all transactions and import history, but "
+            "keeps your categorization rules and accounts (a re-import re-applies them).\n\n"
+            "Full reset — also deletes all categorization rules and accounts."
+        )
+        txn_btn = box.addButton("Delete transactions", QMessageBox.DestructiveRole)
+        all_btn = box.addButton("Full reset", QMessageBox.DestructiveRole)
+        cancel_btn = box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is None or clicked is cancel_btn:
+            return
+        scope = "transactions" if clicked is txn_btn else "all"
+        try:
+            n = importer.clear_data(self._db, scope)
+        except Exception as exc:
+            QMessageBox.critical(self, "Clear failed", str(exc))
+            return
+
+        self._view.refresh()
+        self._dashboard.reset_filter_bounds()
+        self._dashboard.refresh()
+        self._update_status()
+        QMessageBox.information(self, "Data cleared", f"Removed {n} transaction(s).")
 
     # --- drag and drop -------------------------------------------------------
 

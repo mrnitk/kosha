@@ -21,12 +21,18 @@ GRANULARITIES = ("month", "quarter", "year")
 
 @dataclass(frozen=True)
 class Filter:
-    """Scope for a dashboard query. ``None``/empty means 'no constraint'."""
+    """Scope for a dashboard query. ``None``/empty means 'no constraint'.
+
+    Excluded transactions (``effective_excluded=1``) are dropped by default;
+    set ``include_excluded=True`` to see them (e.g. a "show excluded" toggle).
+    """
 
     start: Optional[date] = None
     end: Optional[date] = None
     categories: tuple[str, ...] = field(default_factory=tuple)
+    sub_categories: tuple[str, ...] = field(default_factory=tuple)
     account_ids: tuple[int, ...] = field(default_factory=tuple)
+    include_excluded: bool = False
 
     def where(self, alias: str = "") -> tuple[str, list]:
         """Build a SQL WHERE fragment (without the keyword) and its params."""
@@ -40,10 +46,16 @@ class Filter:
             marks = ",".join("?" * len(self.categories))
             clauses.append(f"{p}effective_category IN ({marks})")
             params.extend(self.categories)
+        if self.sub_categories:
+            marks = ",".join("?" * len(self.sub_categories))
+            clauses.append(f"COALESCE({p}effective_sub_category, 'Unassigned') IN ({marks})")
+            params.extend(self.sub_categories)
         if self.account_ids:
             marks = ",".join("?" * len(self.account_ids))
             clauses.append(f"{p}account_id IN ({marks})")
             params.extend(self.account_ids)
+        if not self.include_excluded:
+            clauses.append(f"COALESCE({p}effective_excluded, 0) = 0")
         return (" AND ".join(clauses) if clauses else "1=1"), params
 
 
@@ -68,7 +80,7 @@ def spend_by_period_category(db: Database, flt: Filter, granularity: str = "mont
     sql = f"""
         SELECT {period} AS period, effective_category, SUM(amount) AS total
         FROM v_transactions_resolved
-        WHERE direction='debit' AND {where}
+        WHERE effective_category='Expense' AND {where}
         GROUP BY period, effective_category
         ORDER BY period, total DESC
     """
@@ -193,6 +205,25 @@ def transactions(db: Database, flt: Filter, limit: int = 500):
         LIMIT ?
     """
     return db.connection.execute(sql, [*params, limit]).fetchall()
+
+
+def distinct_sub_categories(db: Database, category: Optional[str] = None) -> list[str]:
+    """Sub-category labels present in the data, for the filter dropdown.
+
+    Unassigned expense surfaces as 'Unassigned'. Pass ``category`` to limit to
+    the sub-categories used within one category (so the dropdown can cascade).
+    """
+    clause, params = "", []
+    if category:
+        clause = "WHERE effective_category = ?"
+        params = [category]
+    sql = f"""
+        SELECT DISTINCT COALESCE(effective_sub_category, 'Unassigned') AS sub
+        FROM v_transactions_resolved
+        {clause}
+        ORDER BY sub
+    """
+    return [r[0] for r in db.connection.execute(sql, params).fetchall()]
 
 
 def date_bounds(db: Database) -> tuple[Optional[date], Optional[date]]:

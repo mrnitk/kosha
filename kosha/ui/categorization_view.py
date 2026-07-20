@@ -12,13 +12,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QCompleter, QFormLayout, QGroupBox,
+    QAbstractItemView, QCheckBox, QComboBox, QCompleter, QFormLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import categorization as cat
 from ..db import Database
+from ..format import format_inr
 
 
 class CategorizationView(QWidget):
@@ -39,11 +40,12 @@ class CategorizationView(QWidget):
 
         left = QVBoxLayout()
         left.addWidget(QLabel("<b>Keywords to review</b> (no sub-category yet — highest amount first)"))
+        left.addLayout(self._build_filter_bar())
 
         split = QSplitter(Qt.Vertical)
 
         self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Keyword", "Txns", "Amount", "Default"])
+        self._table.setHorizontalHeaderLabels(["Keyword", "Txns", "Amount", "Category"])
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)  # multi-select
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -72,8 +74,12 @@ class CategorizationView(QWidget):
         left.addWidget(self._build_assign_box())
         root.addLayout(left, stretch=3)
 
-        # Right: live category totals.
+        # Right: data coverage + live category / sub-category totals.
         right = QVBoxLayout()
+        self._data_summary = QLabel("—")
+        self._data_summary.setWordWrap(True)
+        right.addWidget(self._data_summary)
+
         right.addWidget(QLabel("<b>Category totals</b>"))
         self._totals = QTableWidget(0, 3)
         self._totals.setHorizontalHeaderLabels(["Category", "Total", "Txns"])
@@ -81,9 +87,36 @@ class CategorizationView(QWidget):
         self._totals.verticalHeader().setVisible(False)
         self._totals.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         right.addWidget(self._totals, stretch=1)
+
+        right.addWidget(QLabel("<b>Sub-category totals</b>"))
+        self._sub_totals = QTableWidget(0, 4)
+        self._sub_totals.setHorizontalHeaderLabels(["Category", "Sub-category", "Total", "Txns"])
+        self._sub_totals.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._sub_totals.verticalHeader().setVisible(False)
+        self._sub_totals.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        right.addWidget(self._sub_totals, stretch=1)
+
         refresh = QPushButton("Refresh"); refresh.clicked.connect(self.refresh)
         right.addWidget(refresh)
         root.addLayout(right, stretch=1)
+
+    def _build_filter_bar(self) -> QHBoxLayout:
+        bar = QHBoxLayout()
+        self._filter_text = QLineEdit()
+        self._filter_text.setPlaceholderText("Filter by keyword…")
+        self._filter_text.setClearButtonEnabled(True)
+        self._filter_text.textChanged.connect(self._load_keywords)
+
+        self._filter_category = QComboBox()
+        self._filter_category.addItem("All categories", None)
+        for c in cat.CATEGORIES:
+            self._filter_category.addItem(cat.display_label(c), c)
+        self._filter_category.currentIndexChanged.connect(self._load_keywords)
+
+        bar.addWidget(QLabel("Filter:"))
+        bar.addWidget(self._filter_text, stretch=1)
+        bar.addWidget(self._filter_category)
+        return bar
 
     def _build_assign_box(self) -> QGroupBox:
         box = QGroupBox("Assign selected keyword(s)")
@@ -93,7 +126,8 @@ class CategorizationView(QWidget):
         form.addRow("Selected:", self._selected_label)
 
         self._category = QComboBox()
-        self._category.addItems(cat.CATEGORIES)
+        for c in cat.CATEGORIES:
+            self._category.addItem(cat.display_label(c), c)
         form.addRow("Category:", self._category)
 
         self._sub_category = QLineEdit()
@@ -106,6 +140,9 @@ class CategorizationView(QWidget):
         self._priority = QSpinBox(); self._priority.setRange(-100, 100)
         form.addRow("Priority:", self._priority)
 
+        self._exclude = QCheckBox("Exclude from all visuals and the table")
+        form.addRow("", self._exclude)
+
         self._assign_btn = QPushButton("Assign")
         self._assign_btn.clicked.connect(self._on_assign)
         self._assign_btn.setEnabled(False)
@@ -117,33 +154,62 @@ class CategorizationView(QWidget):
     def refresh(self) -> None:
         self._load_keywords()
         self._load_totals()
+        self._load_sub_totals()
+        self._load_data_summary()
         self._sub_category.completer().setModel(
             _string_model(cat.distinct_sub_categories(self._db))
         )
         self.changed.emit()
 
     def _load_keywords(self) -> None:
-        self._keywords = cat.unreviewed_keywords(self._db)
+        all_keywords = cat.unreviewed_keywords(self._db)
+        text = self._filter_text.text().strip().upper() if hasattr(self, "_filter_text") else ""
+        want_cat = self._filter_category.currentData() if hasattr(self, "_filter_category") else None
+        self._keywords = [
+            ks for ks in all_keywords
+            if (not text or text in ks.keyword.upper())
+            and (want_cat is None or ks.suggested_category == want_cat)
+        ]
         self._table.setRowCount(len(self._keywords))
         for row, ks in enumerate(self._keywords):
             kw = QTableWidgetItem(ks.keyword); kw.setData(Qt.UserRole, ks.keyword)
             n = QTableWidgetItem(str(ks.txn_count)); n.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            amt = QTableWidgetItem(f"{ks.total_amount:,.2f}"); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            default = QTableWidgetItem(ks.suggested_category)
+            amt = QTableWidgetItem(format_inr(ks.total_amount)); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            category = QTableWidgetItem(cat.display_label(ks.suggested_category))
             self._table.setItem(row, 0, kw)
             self._table.setItem(row, 1, n)
             self._table.setItem(row, 2, amt)
-            self._table.setItem(row, 3, default)
+            self._table.setItem(row, 3, category)
 
     def _load_totals(self) -> None:
         totals = cat.category_totals(self._db)
         self._totals.setRowCount(len(totals))
         for row, (category, total, n) in enumerate(totals):
-            self._totals.setItem(row, 0, QTableWidgetItem(category))
-            amt = QTableWidgetItem(f"{total:,.2f}"); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._totals.setItem(row, 0, QTableWidgetItem(cat.display_label(category)))
+            amt = QTableWidgetItem(format_inr(total)); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._totals.setItem(row, 1, amt)
             ni = QTableWidgetItem(str(n)); ni.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._totals.setItem(row, 2, ni)
+
+    def _load_sub_totals(self) -> None:
+        rows = cat.subcategory_totals(self._db)
+        self._sub_totals.setRowCount(len(rows))
+        for row, (category, sub, total, n) in enumerate(rows):
+            self._sub_totals.setItem(row, 0, QTableWidgetItem(cat.display_label(category)))
+            self._sub_totals.setItem(row, 1, QTableWidgetItem(sub))
+            amt = QTableWidgetItem(format_inr(total)); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._sub_totals.setItem(row, 2, amt)
+            ni = QTableWidgetItem(str(n)); ni.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._sub_totals.setItem(row, 3, ni)
+
+    def _load_data_summary(self) -> None:
+        lo, hi, n = cat.data_summary(self._db)
+        if n:
+            self._data_summary.setText(
+                f"<b>Data:</b> {lo} → {hi} · <b>{n}</b> transactions"
+            )
+        else:
+            self._data_summary.setText("<b>No data yet</b> — import statements to begin.")
 
     # --- interaction ---------------------------------------------------------
 
@@ -166,7 +232,9 @@ class CategorizationView(QWidget):
             # Default the category from the keyword's dominant direction.
             ks = next((k for k in self._keywords if k.keyword == kws[0]), None)
             if ks:
-                self._category.setCurrentText(ks.suggested_category)
+                idx = self._category.findData(ks.suggested_category)
+                if idx >= 0:
+                    self._category.setCurrentIndex(idx)
             self._load_detail(kws[0])
         else:
             self._selected_label.setText(f"{len(kws)} keywords")
@@ -181,23 +249,28 @@ class CategorizationView(QWidget):
         for r, (txn_date, desc, amount, direction, _cat, _sub) in enumerate(rows):
             self._detail.setItem(r, 0, QTableWidgetItem(str(txn_date)))
             self._detail.setItem(r, 1, QTableWidgetItem(desc))
-            amt = QTableWidgetItem(f"{amount:,.2f}"); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            amt = QTableWidgetItem(format_inr(amount)); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._detail.setItem(r, 2, amt)
             self._detail.setItem(r, 3, QTableWidgetItem(direction))
 
-    def assign(self, keywords, category: str, sub_category: str = "", priority: int = 0) -> None:
+    def assign(self, keywords, category: str, sub_category: str = "",
+               priority: int = 0, excluded: bool = False) -> None:
         """Assign a category/sub-category to one or many keywords (also for tests)."""
         if isinstance(keywords, str):
             keywords = [keywords]
-        cat.assign_many(self._db, keywords, category, sub_category or None, priority)
+        cat.assign_many(self._db, keywords, category, sub_category or None, priority, excluded)
         self.refresh()
 
     def _on_assign(self) -> None:
         kws = self.selected_keywords()
         if not kws:
             return
-        self.assign(kws, self._category.currentText(), self._sub_category.text().strip(), self._priority.value())
+        self.assign(
+            kws, self._category.currentData(), self._sub_category.text().strip(),
+            self._priority.value(), self._exclude.isChecked(),
+        )
         self._sub_category.clear()
+        self._exclude.setChecked(False)
 
 
 def _string_model(items):

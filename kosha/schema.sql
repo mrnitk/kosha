@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     merchant_keyword      TEXT,                -- extracted, normalized (e.g. 'SWIGGY')
     category_override     TEXT,                -- manual per-txn override; NULL = use rules
     sub_category_override TEXT,
+    excluded_override     INTEGER,             -- manual per-txn exclude; NULL = inherit rule
     import_batch_id       INTEGER REFERENCES import_batches(id),
     dedup_hash            TEXT UNIQUE          -- hash(date+amount+norm desc+account)
 );
@@ -40,7 +41,8 @@ CREATE TABLE IF NOT EXISTS category_rules (
     keyword       TEXT NOT NULL,              -- matched against merchant_keyword
     category      TEXT NOT NULL,
     sub_category  TEXT,
-    priority      INTEGER DEFAULT 0           -- higher priority wins on conflicts
+    priority      INTEGER DEFAULT 0,          -- higher priority wins on conflicts
+    excluded      INTEGER DEFAULT 0           -- 1 = hide these txns from visuals + table
 );
 
 CREATE INDEX IF NOT EXISTS idx_txn_date        ON transactions(txn_date);
@@ -52,12 +54,17 @@ CREATE INDEX IF NOT EXISTS idx_rules_keyword   ON category_rules(keyword);
 -- retroactively to all history with no data rewrite.
 --
 -- Two levels:
---   * category     in {Income, Expense, Savings}. Defaults by direction
---     (credit -> Income, debit -> Expense); a rule/override can reclassify
---     (e.g. mark an investment debit as Savings).
+--   * category     in {Income, Expense, Savings, Transfer}. Defaults by
+--     direction (credit -> Income, debit -> Expense); a rule/override can
+--     reclassify (e.g. an investment debit as Savings, or a credit-card bill
+--     payment as Transfer so it's kept out of the income/expense/savings math).
 --   * sub_category  free-text detail (Food, Rent, Investments, ...).
 -- Precedence: manual override > best matching rule > direction default.
 -- "best matching rule" = highest priority for a keyword, newest id breaks ties.
+--
+-- ``effective_excluded`` (0/1): a per-txn override wins, else the rule's flag,
+-- else 0. Excluded transactions are hidden from every visual and the table
+-- (analytics filters them out by default).
 -- Dropped-and-recreated so re-applying the schema (on migration) always picks
 -- up a changed definition.
 DROP VIEW IF EXISTS v_transactions_resolved;
@@ -72,11 +79,12 @@ SELECT
         br.category,
         CASE t.direction WHEN 'credit' THEN 'Income' ELSE 'Expense' END
     ) AS effective_category,
-    COALESCE(t.sub_category_override, br.sub_category) AS effective_sub_category
+    COALESCE(t.sub_category_override, br.sub_category) AS effective_sub_category,
+    COALESCE(t.excluded_override, br.excluded, 0) AS effective_excluded
 FROM transactions t
 LEFT JOIN (
-    SELECT keyword, category, sub_category FROM (
-        SELECT keyword, category, sub_category,
+    SELECT keyword, category, sub_category, excluded FROM (
+        SELECT keyword, category, sub_category, excluded,
                ROW_NUMBER() OVER (PARTITION BY keyword ORDER BY priority DESC, id DESC) AS rn
         FROM category_rules
     ) WHERE rn = 1

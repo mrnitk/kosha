@@ -20,7 +20,7 @@ import sqlcipher3
 
 from . import config, crypto
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class WrongPasswordError(Exception):
@@ -37,6 +37,12 @@ class DatabaseLockedError(Exception):
 
 def _load_schema_sql() -> str:
     return resources.files("kosha").joinpath("schema.sql").read_text(encoding="utf-8")
+
+
+def _has_column(con, table: str, column: str) -> bool:
+    """True if ``table`` already has ``column`` (for idempotent ALTERs)."""
+    rows = con.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
 
 
 class Database:
@@ -155,12 +161,29 @@ class Database:
                 f"database schema v{current} is newer than this app (v{SCHEMA_VERSION})"
             )
         if current < SCHEMA_VERSION:
-            # Re-apply schema (idempotent tables; the view is dropped+recreated).
+            # Existing tables predate new columns; CREATE TABLE IF NOT EXISTS
+            # won't add them, so ALTER before re-applying the schema (which
+            # drops+recreates the view against the now-complete columns).
+            if current < 4:
+                self._migrate_to_v4(con)
             con.executescript(_load_schema_sql())
             if current < 3:
                 self._migrate_to_v3(con)
             con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             con.commit()
+
+    @staticmethod
+    def _migrate_to_v4(con: sqlcipher3.Connection) -> None:
+        """Add the exclude columns (Transfer category needs no schema change).
+
+        ``category_rules.excluded`` and ``transactions.excluded_override`` back
+        the new hide-from-everything flag. Guarded so a partial/re-run migration
+        doesn't error on an already-present column.
+        """
+        if not _has_column(con, "transactions", "excluded_override"):
+            con.execute("ALTER TABLE transactions ADD COLUMN excluded_override INTEGER")
+        if not _has_column(con, "category_rules", "excluded"):
+            con.execute("ALTER TABLE category_rules ADD COLUMN excluded INTEGER DEFAULT 0")
 
     @staticmethod
     def _migrate_to_v3(con: sqlcipher3.Connection) -> None:
