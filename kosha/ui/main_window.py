@@ -6,13 +6,14 @@ from pathlib import Path
 
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QFileDialog, QInputDialog, QMainWindow, QMessageBox,
+    QFileDialog, QInputDialog, QMainWindow, QMessageBox, QTabWidget,
 )
 
 from .. import importer
 from ..db import Database
 from ..parsers import REGISTRY
 from .categorization_view import CategorizationView
+from .dashboard_view import DashboardView
 
 
 class MainWindow(QMainWindow):
@@ -22,9 +23,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Kosha — Expense Tracker")
         self.resize(1000, 640)
 
+        self._dashboard = DashboardView(db)
         self._view = CategorizationView(db)
         self._view.changed.connect(self._update_status)
-        self.setCentralWidget(self._view)
+        # Re-categorizing changes resolution, so refresh the dashboard when the
+        # user switches back to it.
+        self._view.changed.connect(self._dashboard.refresh)
+
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._dashboard, "Dashboard")
+        self._tabs.addTab(self._view, "Categorize")
+        self.setCentralWidget(self._tabs)
 
         self._build_menu()
         self._update_status()
@@ -77,6 +86,8 @@ class MainWindow(QMainWindow):
             return
 
         self._view.refresh()
+        self._dashboard.reset_filter_bounds()
+        self._dashboard.refresh()
         QMessageBox.information(self, "Import complete", str(result))
 
     def _detect_parser(self, path: Path):
