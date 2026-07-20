@@ -142,7 +142,7 @@ def test_unreviewed_keywords_ranked_and_direction(db):
     keywords = [k.keyword for k in uk]
     assert keywords[0] == "ACME EMPLOYER"             # 90000 highest amount
     acme = uk[0]
-    assert acme.dominant_direction == "credit"
+    assert acme.direction == "credit"
     assert acme.suggested_category == "Income"
     swiggy = next(k for k in uk if k.keyword == "SWIGGY LIMITED")
     assert swiggy.txn_count == 2 and swiggy.total_amount == 500.0
@@ -177,3 +177,60 @@ def test_distinct_sub_categories(db):
     cat.add_rule(db, "SWIGGY LIMITED", "Expense", "Food")
     cat.add_rule(db, "RANDOM SHOP", "Expense", "Shopping")
     assert cat.distinct_sub_categories(db) == ["Food", "Shopping"]
+
+
+# --- direction-aware rules ---------------------------------------------------
+
+def _seed_bidirectional(db):
+    """Add a merchant (BROKER) seen both ways: a debit and a credit."""
+    con = db.connection
+    con.execute(
+        "INSERT INTO transactions(id,txn_date,raw_description,amount,direction,account_id,merchant_keyword,dedup_hash) "
+        "VALUES (10,'2026-04-02','INVEST BROKER',2000,'debit',1,'BROKER','hd10')")
+    con.execute(
+        "INSERT INTO transactions(id,txn_date,raw_description,amount,direction,account_id,merchant_keyword,dedup_hash) "
+        "VALUES (11,'2026-04-03','REDEEM BROKER',9000,'credit',1,'BROKER','hd11')")
+    con.commit()
+
+
+def test_direction_scoped_rules_split_a_merchant(db):
+    _seed_bidirectional(db)
+    cat.add_rule(db, "BROKER", "Savings", "Investments", direction="debit")
+    cat.add_rule(db, "BROKER", "Income", "Redemption", direction="credit")
+    assert _effective(db, 10) == ("Savings", "Investments")   # the debit
+    assert _effective(db, 11) == ("Income", "Redemption")     # the credit
+
+
+def test_direction_specific_rule_outranks_generic(db):
+    _seed_bidirectional(db)
+    cat.add_rule(db, "BROKER", "Expense", "Misc")                       # generic (both)
+    cat.add_rule(db, "BROKER", "Savings", "Investments", direction="debit")
+    assert _effective(db, 10) == ("Savings", "Investments")   # specific wins on debit
+    assert _effective(db, 11) == ("Expense", "Misc")          # credit falls to generic
+
+
+def test_generic_and_scoped_rules_are_distinct_slots(db):
+    _seed_bidirectional(db)
+    cat.add_rule(db, "BROKER", "Expense", "Misc")                       # NULL direction
+    cat.add_rule(db, "BROKER", "Savings", "Investments", direction="debit")
+    keywords_dirs = {(r.keyword, r.direction) for r in cat.list_rules(db)}
+    assert ("BROKER", None) in keywords_dirs and ("BROKER", "debit") in keywords_dirs
+
+
+def test_review_splits_bidirectional_into_two_rows(db):
+    _seed_bidirectional(db)
+    slices = [(k.keyword, k.direction) for k in cat.unreviewed_keywords(db) if k.keyword == "BROKER"]
+    assert set(slices) == {("BROKER", "debit"), ("BROKER", "credit")}
+
+
+def test_handling_one_direction_leaves_the_other(db):
+    _seed_bidirectional(db)
+    cat.add_rule(db, "BROKER", "Savings", "Investments", direction="debit")
+    remaining = {(k.keyword, k.direction) for k in cat.unreviewed_keywords(db) if k.keyword == "BROKER"}
+    assert remaining == {("BROKER", "credit")}   # debit handled, credit still pending
+
+
+def test_transactions_for_keyword_direction_filter(db):
+    _seed_bidirectional(db)
+    debit_only = cat.transactions_for_keyword(db, "BROKER", direction="debit")
+    assert len(debit_only) == 1 and debit_only[0][3] == "debit"

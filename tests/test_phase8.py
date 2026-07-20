@@ -205,12 +205,12 @@ def test_clear_data_rejects_unknown_scope(db):
 
 # --- migration v3 -> v4 ------------------------------------------------------
 
-def test_migration_adds_exclude_columns(tmp_path):
-    """A v3 database gains the exclude columns and the effective_excluded view col."""
+def test_migration_adds_exclude_and_direction_columns(tmp_path):
+    """A v3 database gains the exclude + direction columns via migration."""
     db_file, salt_file = tmp_path / "k.db", tmp_path / "k.salt"
     d = Database(db_file=db_file, salt_file=salt_file)
     d.create(PW, params=FAST)
-    # Simulate an older DB: drop the new columns' presence by faking the version.
+    # Simulate an older DB by faking the version back to 3.
     con = d.connection
     con.execute("PRAGMA user_version = 3")
     con.commit()
@@ -218,9 +218,9 @@ def test_migration_adds_exclude_columns(tmp_path):
 
     d2 = Database(db_file=db_file, salt_file=salt_file)
     d2.unlock(PW)                                     # triggers _migrate
-    assert d2.connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert d2.connection.execute("PRAGMA user_version").fetchone()[0] == 5
     cols = {r[1] for r in d2.connection.execute("PRAGMA table_info(category_rules)")}
-    assert "excluded" in cols
+    assert {"excluded", "direction"} <= cols
     tcols = {r[1] for r in d2.connection.execute("PRAGMA table_info(transactions)")}
     assert "excluded_override" in tcols
     d2.lock()

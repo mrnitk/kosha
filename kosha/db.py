@@ -20,7 +20,7 @@ import sqlcipher3
 
 from . import config, crypto
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class WrongPasswordError(Exception):
@@ -166,6 +166,8 @@ class Database:
             # drops+recreates the view against the now-complete columns).
             if current < 4:
                 self._migrate_to_v4(con)
+            if current < 5:
+                self._migrate_to_v5(con)
             con.executescript(_load_schema_sql())
             if current < 3:
                 self._migrate_to_v3(con)
@@ -184,6 +186,16 @@ class Database:
             con.execute("ALTER TABLE transactions ADD COLUMN excluded_override INTEGER")
         if not _has_column(con, "category_rules", "excluded"):
             con.execute("ALTER TABLE category_rules ADD COLUMN excluded INTEGER DEFAULT 0")
+
+    @staticmethod
+    def _migrate_to_v5(con: sqlcipher3.Connection) -> None:
+        """Add ``category_rules.direction`` for direction-aware rules.
+
+        Existing rules get NULL (apply to both directions), so behaviour is
+        unchanged until the user adds a direction-scoped rule.
+        """
+        if not _has_column(con, "category_rules", "direction"):
+            con.execute("ALTER TABLE category_rules ADD COLUMN direction TEXT")
 
     @staticmethod
     def _migrate_to_v3(con: sqlcipher3.Connection) -> None:

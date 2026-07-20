@@ -127,7 +127,7 @@ def test_assign_with_exclude_flag(tmp_path):
 def test_category_column_renamed(tmp_path):
     db = _make_db(tmp_path)
     view = CategorizationView(db)
-    assert view._table.horizontalHeaderItem(3).text() == "Category"
+    assert view._table.horizontalHeaderItem(4).text() == "Category"
     db.lock()
 
 
@@ -142,6 +142,37 @@ def test_sub_category_totals_and_data_summary_present(tmp_path):
     ]
     assert ("Expense", "Food") in subs
     assert "2026-04-01" in view._data_summary.text()
+    db.lock()
+
+
+def test_review_row_assign_is_direction_scoped(tmp_path):
+    db = _make_db(tmp_path)
+    # Make SWIGGY bidirectional: add a refund (credit) alongside the debits.
+    db.connection.execute(
+        "INSERT INTO transactions(id,txn_date,raw_description,amount,direction,account_id,merchant_keyword,dedup_hash) "
+        "VALUES (99,'2026-04-02','REFUND SWIGGY',150,'credit',1,'SWIGGY LIMITED','h99')")
+    db.connection.commit()
+
+    view = CategorizationView(db)
+    # Two SWIGGY slices now exist (debit + credit); select the credit one.
+    target = None
+    for r in range(view._table.rowCount()):
+        ks = view._keywords[r]
+        if ks.keyword == "SWIGGY LIMITED" and ks.direction == "credit":
+            target = r
+            break
+    assert target is not None
+    view._table.selectRow(target)
+    view._category.setCurrentIndex(view._category.findData("Income"))
+    view._sub_category.setText("Refund")
+    view._on_assign()
+
+    rules = {(r.keyword, r.direction): r for r in cat.list_rules(db)}
+    assert rules[("SWIGGY LIMITED", "credit")].sub_category == "Refund"
+    # The debit slice is untouched and still pending review.
+    pending = {(k.keyword, k.direction) for k in cat.unreviewed_keywords(db)}
+    assert ("SWIGGY LIMITED", "debit") in pending
+    assert ("SWIGGY LIMITED", "credit") not in pending
     db.lock()
 
 

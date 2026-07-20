@@ -44,15 +44,15 @@ class CategorizationView(QWidget):
 
         split = QSplitter(Qt.Vertical)
 
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Keyword", "Txns", "Amount", "Category"])
+        self._table = QTableWidget(0, 5)
+        self._table.setHorizontalHeaderLabels(["Keyword", "Dir", "Txns", "Amount", "Category"])
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)  # multi-select
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        for c in (1, 2, 3):
+        for c in (1, 2, 3, 4):
             hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         self._table.itemSelectionChanged.connect(self._on_select)
         split.addWidget(self._table)
@@ -173,13 +173,15 @@ class CategorizationView(QWidget):
         self._table.setRowCount(len(self._keywords))
         for row, ks in enumerate(self._keywords):
             kw = QTableWidgetItem(ks.keyword); kw.setData(Qt.UserRole, ks.keyword)
+            dr = QTableWidgetItem(ks.direction); dr.setTextAlignment(Qt.AlignCenter)
             n = QTableWidgetItem(str(ks.txn_count)); n.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             amt = QTableWidgetItem(format_inr(ks.total_amount)); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             category = QTableWidgetItem(cat.display_label(ks.suggested_category))
             self._table.setItem(row, 0, kw)
-            self._table.setItem(row, 1, n)
-            self._table.setItem(row, 2, amt)
-            self._table.setItem(row, 3, category)
+            self._table.setItem(row, 1, dr)
+            self._table.setItem(row, 2, n)
+            self._table.setItem(row, 3, amt)
+            self._table.setItem(row, 4, category)
 
     def _load_totals(self) -> None:
         totals = cat.category_totals(self._db)
@@ -213,64 +215,75 @@ class CategorizationView(QWidget):
 
     # --- interaction ---------------------------------------------------------
 
+    def selected_rows(self):
+        """The selected (keyword, direction) review slices, top-to-bottom."""
+        rows = sorted({i.row() for i in self._table.selectedItems()})
+        return [self._keywords[r] for r in rows if r < len(self._keywords)]
+
     def selected_keywords(self) -> list[str]:
-        rows = {i.row() for i in self._table.selectedItems()}
-        return [self._table.item(r, 0).data(Qt.UserRole) for r in sorted(rows)]
+        return [ks.keyword for ks in self.selected_rows()]
 
     def _on_select(self) -> None:
-        kws = self.selected_keywords()
-        self._assign_btn.setEnabled(bool(kws))
-        if not kws:
+        sel = self.selected_rows()
+        self._assign_btn.setEnabled(bool(sel))
+        if not sel:
             self._selected_label.setText("—")
             self._assign_btn.setText("Assign")
             self._detail.setRowCount(0)
             self._detail_label.setText("Select a keyword to see its transactions")
             return
-        if len(kws) == 1:
-            self._selected_label.setText(kws[0])
+        if len(sel) == 1:
+            ks = sel[0]
+            self._selected_label.setText(f"{ks.keyword} ({ks.direction})")
             self._assign_btn.setText("Assign")
-            # Default the category from the keyword's dominant direction.
-            ks = next((k for k in self._keywords if k.keyword == kws[0]), None)
-            if ks:
-                idx = self._category.findData(ks.suggested_category)
-                if idx >= 0:
-                    self._category.setCurrentIndex(idx)
-            self._load_detail(kws[0])
+            # Default the category from this slice's direction.
+            idx = self._category.findData(ks.suggested_category)
+            if idx >= 0:
+                self._category.setCurrentIndex(idx)
+            self._load_detail(ks.keyword, ks.direction)
         else:
-            self._selected_label.setText(f"{len(kws)} keywords")
-            self._assign_btn.setText(f"Assign {len(kws)} keywords")
+            self._selected_label.setText(f"{len(sel)} slices")
+            self._assign_btn.setText(f"Assign {len(sel)} slices")
             self._detail.setRowCount(0)
-            self._detail_label.setText("Multiple keywords selected — assign applies to all")
+            self._detail_label.setText("Multiple selected — assign applies to each (per its direction)")
 
-    def _load_detail(self, keyword: str) -> None:
-        rows = cat.transactions_for_keyword(self._db, keyword)
-        self._detail_label.setText(f"<b>{len(rows)}</b> transaction(s) in <b>{keyword}</b>")
+    def _load_detail(self, keyword: str, direction: str | None = None) -> None:
+        rows = cat.transactions_for_keyword(self._db, keyword, direction=direction)
+        scope = f"{keyword} ({direction})" if direction else keyword
+        self._detail_label.setText(f"<b>{len(rows)}</b> transaction(s) in <b>{scope}</b>")
         self._detail.setRowCount(len(rows))
-        for r, (txn_date, desc, amount, direction, _cat, _sub) in enumerate(rows):
+        for r, (txn_date, desc, amount, txn_direction, _cat, _sub) in enumerate(rows):
             self._detail.setItem(r, 0, QTableWidgetItem(str(txn_date)))
             self._detail.setItem(r, 1, QTableWidgetItem(desc))
             amt = QTableWidgetItem(format_inr(amount)); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._detail.setItem(r, 2, amt)
-            self._detail.setItem(r, 3, QTableWidgetItem(direction))
+            self._detail.setItem(r, 3, QTableWidgetItem(txn_direction))
 
     def assign(self, keywords, category: str, sub_category: str = "",
-               priority: int = 0, excluded: bool = False) -> None:
-        """Assign a category/sub-category to one or many keywords (also for tests)."""
+               priority: int = 0, excluded: bool = False, direction: str | None = None) -> None:
+        """Assign a category/sub-category to one or many keywords (also for tests).
+
+        ``direction`` None writes a rule that applies to both sides.
+        """
         if isinstance(keywords, str):
             keywords = [keywords]
-        cat.assign_many(self._db, keywords, category, sub_category or None, priority, excluded)
+        cat.assign_many(self._db, keywords, category, sub_category or None, priority, excluded, direction)
         self.refresh()
 
     def _on_assign(self) -> None:
-        kws = self.selected_keywords()
-        if not kws:
+        sel = self.selected_rows()
+        if not sel:
             return
-        self.assign(
-            kws, self._category.currentData(), self._sub_category.text().strip(),
-            self._priority.value(), self._exclude.isChecked(),
-        )
+        category = self._category.currentData()
+        sub = self._sub_category.text().strip()
+        priority = self._priority.value()
+        excluded = self._exclude.isChecked()
+        # Each selected slice is written scoped to its own direction.
+        for ks in sel:
+            cat.add_rule(self._db, ks.keyword, category, sub or None, priority, excluded, ks.direction)
         self._sub_category.clear()
         self._exclude.setChecked(False)
+        self.refresh()
 
 
 def _string_model(items):

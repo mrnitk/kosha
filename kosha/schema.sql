@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS category_rules (
     category      TEXT NOT NULL,
     sub_category  TEXT,
     priority      INTEGER DEFAULT 0,          -- higher priority wins on conflicts
-    excluded      INTEGER DEFAULT 0           -- 1 = hide these txns from visuals + table
+    excluded      INTEGER DEFAULT 0,          -- 1 = hide these txns from visuals + table
+    direction     TEXT                        -- NULL = any; 'debit'|'credit' = scoped
 );
 
 CREATE INDEX IF NOT EXISTS idx_txn_date        ON transactions(txn_date);
@@ -60,7 +61,14 @@ CREATE INDEX IF NOT EXISTS idx_rules_keyword   ON category_rules(keyword);
 --     payment as Transfer so it's kept out of the income/expense/savings math).
 --   * sub_category  free-text detail (Food, Rent, Investments, ...).
 -- Precedence: manual override > best matching rule > direction default.
--- "best matching rule" = highest priority for a keyword, newest id breaks ties.
+--
+-- Rules are direction-aware: a rule with direction NULL applies to both
+-- directions of its keyword; a rule scoped to 'debit'/'credit' applies only to
+-- that side and OUTRANKS the generic rule. This lets one merchant map two ways
+-- (e.g. ZERODHA debit -> Savings, ZERODHA credit -> Income). "best matching
+-- rule" = for the txn's direction, direction-specific beats generic, then higher
+-- priority, then newest id. Each rule is expanded to the direction(s) it covers
+-- and ranked within (keyword, direction).
 --
 -- ``effective_excluded`` (0/1): a per-txn override wins, else the rule's flag,
 -- else 0. Excluded transactions are hidden from every visual and the table
@@ -83,9 +91,16 @@ SELECT
     COALESCE(t.excluded_override, br.excluded, 0) AS effective_excluded
 FROM transactions t
 LEFT JOIN (
-    SELECT keyword, category, sub_category, excluded FROM (
-        SELECT keyword, category, sub_category, excluded,
-               ROW_NUMBER() OVER (PARTITION BY keyword ORDER BY priority DESC, id DESC) AS rn
-        FROM category_rules
+    SELECT keyword, tgt_direction, category, sub_category, excluded FROM (
+        SELECT r.keyword AS keyword, d.dir AS tgt_direction,
+               r.category AS category, r.sub_category AS sub_category, r.excluded AS excluded,
+               ROW_NUMBER() OVER (
+                   PARTITION BY r.keyword, d.dir
+                   ORDER BY (CASE WHEN r.direction IS NULL THEN 0 ELSE 1 END) DESC,
+                            r.priority DESC, r.id DESC
+               ) AS rn
+        FROM category_rules r
+        JOIN (SELECT 'debit' AS dir UNION ALL SELECT 'credit' AS dir) d
+          ON (r.direction IS NULL OR r.direction = d.dir)
     ) WHERE rn = 1
-) br ON br.keyword = t.merchant_keyword;
+) br ON br.keyword = t.merchant_keyword AND br.tgt_direction = t.direction;

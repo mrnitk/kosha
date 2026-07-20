@@ -82,23 +82,56 @@ class Rule:
     sub_category: Optional[str]
     priority: int
     excluded: bool = False
+    direction: Optional[str] = None      # None = applies to both directions
+
+
+def normalize_direction(direction: Optional[str]) -> Optional[str]:
+    """Coerce to 'debit'/'credit', or None for a rule that applies to both."""
+    key = (direction or "").strip().lower()
+    if key in ("debit", "dr", "d"):
+        return "debit"
+    if key in ("credit", "cr", "c"):
+        return "credit"
+    return None
 
 
 @dataclass(frozen=True)
 class KeywordSpend:
-    """A merchant keyword awaiting review, with its footprint."""
+    """One (keyword, direction) slice awaiting review, with its footprint.
+
+    A merchant seen in both directions (e.g. an investment platform: debits to
+    invest, credits when money comes back) produces two rows, so each side can be
+    categorized independently.
+    """
 
     keyword: str
+    direction: str               # 'debit' or 'credit' — this slice's direction
     txn_count: int
     total_amount: float
-    dominant_direction: str      # 'debit' or 'credit' — drives the default category
 
     @property
     def suggested_category(self) -> str:
-        return default_category(self.dominant_direction)
+        return default_category(self.direction)
 
 
 # --- rule CRUD ---------------------------------------------------------------
+
+def _find_rule_id(con, keyword: str, direction: Optional[str]) -> Optional[int]:
+    """Id of the rule for exactly this (keyword, direction) slot, or None.
+
+    A NULL-direction (any) rule and a direction-scoped rule are distinct slots
+    for the same keyword, so upserts key on both.
+    """
+    if direction is None:
+        row = con.execute(
+            "SELECT id FROM category_rules WHERE keyword=? AND direction IS NULL", (keyword,)
+        ).fetchone()
+    else:
+        row = con.execute(
+            "SELECT id FROM category_rules WHERE keyword=? AND direction=?", (keyword, direction)
+        ).fetchone()
+    return row[0] if row else None
+
 
 def add_rule(
     db: Database,
@@ -107,31 +140,35 @@ def add_rule(
     sub_category: Optional[str] = None,
     priority: int = 0,
     excluded: bool = False,
+    direction: Optional[str] = None,
 ) -> int:
-    """Create (or update in place) the rule for ``keyword``. Returns the rule id.
+    """Create (or update in place) the rule for ``keyword`` in ``direction``.
 
-    A keyword maps to one rule, so re-assigning updates it rather than piling up
-    duplicates. ``category`` is coerced to a canonical value.
+    ``direction`` NULL applies to both sides; 'debit'/'credit' scopes the rule to
+    that side and outranks the generic rule. A (keyword, direction) slot maps to
+    one rule, so re-assigning updates it rather than piling up duplicates.
     """
     norm = features.normalize_keyword(keyword)
     if not norm:
         raise ValueError("keyword is empty after normalization")
     category = normalize_category(category)
+    direction = normalize_direction(direction)
     sub_category = sub_category.strip() if sub_category and sub_category.strip() else None
     exc = 1 if excluded else 0
 
     con = db.connection
-    existing = con.execute("SELECT id FROM category_rules WHERE keyword = ?", (norm,)).fetchone()
-    if existing:
+    existing = _find_rule_id(con, norm, direction)
+    if existing is not None:
         con.execute(
             "UPDATE category_rules SET category=?, sub_category=?, priority=?, excluded=? WHERE id=?",
-            (category, sub_category, priority, exc, existing[0]),
+            (category, sub_category, priority, exc, existing),
         )
         con.commit()
-        return existing[0]
+        return existing
     cur = con.execute(
-        "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded) VALUES (?,?,?,?,?)",
-        (norm, category, sub_category, priority, exc),
+        "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded, direction) "
+        "VALUES (?,?,?,?,?,?)",
+        (norm, category, sub_category, priority, exc, direction),
     )
     con.commit()
     return cur.lastrowid
@@ -144,12 +181,15 @@ def assign_many(
     sub_category: Optional[str] = None,
     priority: int = 0,
     excluded: bool = False,
+    direction: Optional[str] = None,
 ) -> int:
     """Bulk-assign the same category/sub-category to several keywords.
 
-    Returns the number of keywords assigned. Runs as one transaction.
+    All assignments share one ``direction`` (NULL = both). Returns the number of
+    keywords assigned. Runs as one transaction.
     """
     category = normalize_category(category)
+    direction = normalize_direction(direction)
     sub = sub_category.strip() if sub_category and sub_category.strip() else None
     exc = 1 if excluded else 0
     con = db.connection
@@ -159,16 +199,17 @@ def assign_many(
             norm = features.normalize_keyword(kw)
             if not norm:
                 continue
-            existing = con.execute("SELECT id FROM category_rules WHERE keyword=?", (norm,)).fetchone()
-            if existing:
+            existing = _find_rule_id(con, norm, direction)
+            if existing is not None:
                 con.execute(
                     "UPDATE category_rules SET category=?, sub_category=?, priority=?, excluded=? WHERE id=?",
-                    (category, sub, priority, exc, existing[0]),
+                    (category, sub, priority, exc, existing),
                 )
             else:
                 con.execute(
-                    "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded) VALUES (?,?,?,?,?)",
-                    (norm, category, sub, priority, exc),
+                    "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded, direction) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (norm, category, sub, priority, exc, direction),
                 )
             count += 1
         con.commit()
@@ -178,14 +219,17 @@ def assign_many(
     return count
 
 
-def set_excluded_keywords(db: Database, keywords: list[str], excluded: bool) -> int:
-    """Flip the exclude flag on one or many keywords (creating a rule if needed).
+def set_excluded_keywords(
+    db: Database, keywords: list[str], excluded: bool, direction: Optional[str] = None
+) -> int:
+    """Flip the exclude flag on one or many (keyword, direction) slots.
 
-    Excluding a keyword hides all its transactions from every visual and the
-    drill-down table. Returns the number of keywords touched. A keyword with no
-    rule yet gets a minimal rule carrying its direction-default category.
+    Excluding hides the matching transactions from every visual and the
+    drill-down table. A slot with no rule yet gets a minimal rule carrying its
+    direction-default category. Returns the number of slots touched.
     """
     exc = 1 if excluded else 0
+    direction = normalize_direction(direction)
     con = db.connection
     count = 0
     try:
@@ -193,21 +237,25 @@ def set_excluded_keywords(db: Database, keywords: list[str], excluded: bool) -> 
             norm = features.normalize_keyword(kw)
             if not norm:
                 continue
-            existing = con.execute("SELECT id FROM category_rules WHERE keyword=?", (norm,)).fetchone()
-            if existing:
-                con.execute("UPDATE category_rules SET excluded=? WHERE id=?", (exc, existing[0]))
+            existing = _find_rule_id(con, norm, direction)
+            if existing is not None:
+                con.execute("UPDATE category_rules SET excluded=? WHERE id=?", (exc, existing))
             else:
-                dom = con.execute(
-                    "SELECT CASE WHEN SUM(CASE WHEN direction='credit' THEN 1 ELSE 0 END) "
-                    "> SUM(CASE WHEN direction='debit' THEN 1 ELSE 0 END) THEN 'credit' ELSE 'debit' END "
-                    "FROM transactions WHERE merchant_keyword=?",
-                    (norm,),
-                ).fetchone()
-                direction = (dom[0] if dom and dom[0] else "debit")
+                # Default the category from this slot's direction (or the keyword's
+                # dominant direction when the rule applies to both).
+                dir_for_default = direction
+                if dir_for_default is None:
+                    dom = con.execute(
+                        "SELECT CASE WHEN SUM(CASE WHEN direction='credit' THEN 1 ELSE 0 END) "
+                        "> SUM(CASE WHEN direction='debit' THEN 1 ELSE 0 END) THEN 'credit' ELSE 'debit' END "
+                        "FROM transactions WHERE merchant_keyword=?",
+                        (norm,),
+                    ).fetchone()
+                    dir_for_default = (dom[0] if dom and dom[0] else "debit")
                 con.execute(
-                    "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded) "
-                    "VALUES (?,?,?,?,?)",
-                    (norm, default_category(direction), None, 0, exc),
+                    "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded, direction) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (norm, default_category(dir_for_default), None, 0, exc, direction),
                 )
             count += 1
         con.commit()
@@ -249,10 +297,10 @@ def delete_rule(db: Database, rule_id: int) -> None:
 
 def list_rules(db: Database) -> list[Rule]:
     rows = db.connection.execute(
-        "SELECT id, keyword, category, sub_category, priority, COALESCE(excluded, 0) "
+        "SELECT id, keyword, category, sub_category, priority, COALESCE(excluded, 0), direction "
         "FROM category_rules ORDER BY category, keyword"
     ).fetchall()
-    return [Rule(id_, kw, cat_, sub, pri, bool(exc)) for id_, kw, cat_, sub, pri, exc in rows]
+    return [Rule(id_, kw, cat_, sub, pri, bool(exc), d) for id_, kw, cat_, sub, pri, exc, d in rows]
 
 
 # --- manual per-transaction overrides ----------------------------------------
@@ -289,55 +337,63 @@ def set_excluded(db: Database, txn_id: int, excluded: Optional[bool]) -> None:
 # --- review queries ----------------------------------------------------------
 
 def unreviewed_keywords(db: Database) -> list[KeywordSpend]:
-    """Keywords not yet handled, ranked by total amount.
+    """(keyword, direction) slices not yet handled, ranked by total amount.
 
-    Every transaction already has a category by direction, so review is about
-    assigning the descriptive sub-category (and optionally reclassifying to
-    Savings). A keyword counts as handled once a rule gives it a sub_category,
-    marks it excluded, or reclassifies it to Transfer — any of which means the
-    user has made a deliberate decision about it.
+    Rules are direction-aware, so review is per direction: a merchant seen both
+    ways yields a debit row and a credit row, each categorized on its own. A
+    slice counts as handled once a rule *matching that direction* (a direction-
+    scoped rule or a NULL-direction one) gives it a sub_category, marks it
+    excluded, or reclassifies it to Transfer.
     """
     rows = db.connection.execute(
         """
         SELECT
             t.merchant_keyword,
+            t.direction,
             COUNT(*) AS n,
-            SUM(t.amount) AS total,
-            CASE WHEN SUM(CASE WHEN t.direction='credit' THEN 1 ELSE 0 END)
-                      > SUM(CASE WHEN t.direction='debit' THEN 1 ELSE 0 END)
-                 THEN 'credit' ELSE 'debit' END AS dominant
+            SUM(t.amount) AS total
         FROM transactions t
         WHERE t.merchant_keyword IS NOT NULL AND t.merchant_keyword <> ''
           AND NOT EXISTS (
               SELECT 1 FROM category_rules r
               WHERE r.keyword = t.merchant_keyword
+                AND (r.direction IS NULL OR r.direction = t.direction)
                 AND (r.sub_category IS NOT NULL
                      OR COALESCE(r.excluded, 0) = 1
                      OR r.category = 'Transfer')
           )
-        GROUP BY t.merchant_keyword
+        GROUP BY t.merchant_keyword, t.direction
         ORDER BY total DESC, n DESC
         """
     ).fetchall()
     return [
-        KeywordSpend(keyword=k, txn_count=n, total_amount=total, dominant_direction=dom)
-        for k, n, total, dom in rows
+        KeywordSpend(keyword=k, direction=d, txn_count=n, total_amount=total)
+        for k, d, n, total in rows
     ]
 
 
-def transactions_for_keyword(db: Database, keyword: str, limit: int = 500):
-    """All transactions under a merchant keyword, newest first (for drill-in)."""
+def transactions_for_keyword(db: Database, keyword: str, limit: int = 500,
+                             direction: Optional[str] = None):
+    """Transactions under a merchant keyword, newest first (for drill-in).
+
+    ``direction`` (optional) limits to one side, matching a review slice.
+    """
     norm = features.normalize_keyword(keyword)
+    direction = normalize_direction(direction)
+    clause, params = "merchant_keyword = ?", [norm]
+    if direction:
+        clause += " AND direction = ?"; params.append(direction)
+    params.append(limit)
     return db.connection.execute(
-        """
+        f"""
         SELECT txn_date, raw_description, amount, direction,
                effective_category, effective_sub_category
         FROM v_transactions_resolved
-        WHERE merchant_keyword = ?
+        WHERE {clause}
         ORDER BY txn_date DESC, id DESC
         LIMIT ?
         """,
-        (norm, limit),
+        params,
     ).fetchall()
 
 
