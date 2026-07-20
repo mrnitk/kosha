@@ -40,15 +40,16 @@ class DashboardView(QWidget):
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.addLayout(self._build_filter_bar())
+        root.addWidget(self._build_stats())
 
         splitter = QSplitter(Qt.Vertical)
 
         self._web = self._make_web_view()
         splitter.addWidget(self._web)
 
-        self._table = QTableWidget(0, 6)
+        self._table = QTableWidget(0, 8)
         self._table.setHorizontalHeaderLabels(
-            ["Date", "Description", "Amount", "Dir", "Type", "Category"]
+            ["Date", "Description", "Amount", "Dir", "Type", "Source", "Category", "Sub-category"]
         )
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
@@ -57,6 +58,17 @@ class DashboardView(QWidget):
         splitter.setSizes([420, 220])
 
         root.addWidget(splitter, stretch=1)
+
+    def _build_stats(self) -> QTableWidget:
+        """Compact per-month average/min/max/total for Income/Expense/Savings."""
+        t = QTableWidget(3, 5)
+        t.setHorizontalHeaderLabels(["Per month", "Average", "Min", "Max", "Total"])
+        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setStretchLastSection(True)
+        t.setFixedHeight(118)          # header + 3 compact rows; no scrollbar
+        self._stats = t
+        return t
 
     def _make_web_view(self):
         try:
@@ -84,6 +96,9 @@ class DashboardView(QWidget):
         self._sub_category = QComboBox()   # 'All' + sub-categories of the chosen category
         self._sub_category.addItem("All sub-categories", None)
 
+        self._source = QComboBox()   # 'All' + each account (id in userData)
+        self._source.addItem("All sources", None)
+
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self.refresh)
 
@@ -92,6 +107,7 @@ class DashboardView(QWidget):
         bar.addWidget(QLabel("By")); bar.addWidget(self._granularity)
         bar.addWidget(self._category)
         bar.addWidget(self._sub_category)
+        bar.addWidget(self._source)
         bar.addWidget(apply_btn)
         bar.addStretch(1)
         return bar
@@ -105,6 +121,18 @@ class DashboardView(QWidget):
         self._start.setDate(QDate(lo.year, lo.month, lo.day))
         self._end.setDate(QDate(hi.year, hi.month, hi.day))
         self._reload_categories()
+        self._reload_sources()
+
+    def _reload_sources(self) -> None:
+        current = self._source.currentData()
+        self._source.blockSignals(True)
+        self._source.clear()
+        self._source.addItem("All sources", None)
+        for acc_id, name in analytics.list_accounts(self._db):
+            self._source.addItem(name, acc_id)
+        idx = self._source.findData(current)
+        self._source.setCurrentIndex(idx if idx >= 0 else 0)
+        self._source.blockSignals(False)
 
     def _reload_categories(self) -> None:
         current = self._category.currentData()
@@ -142,11 +170,15 @@ class DashboardView(QWidget):
         sub_categories: tuple[str, ...] = ()
         if self._sub_category.currentData() is not None:
             sub_categories = (self._sub_category.currentData(),)
+        account_ids: tuple[int, ...] = ()
+        if self._source.currentData() is not None:
+            account_ids = (self._source.currentData(),)
         return analytics.Filter(
             start=date(s.year(), s.month(), s.day()),
             end=date(e.year(), e.month(), e.day()),
             categories=categories,
             sub_categories=sub_categories,
+            account_ids=account_ids,
         )
 
     def granularity(self) -> str:
@@ -175,7 +207,23 @@ class DashboardView(QWidget):
     def refresh(self) -> None:
         html = self.build_html()
         self._render(html)
+        self._load_stats()
         self._load_table()
+
+    def _load_stats(self) -> None:
+        stats = analytics.monthly_stats(self._db, self.current_filter())
+        labels = [
+            ("Income", categorization.INCOME),
+            ("Expense", categorization.EXPENSE),
+            ("Savings / Investments", categorization.SAVINGS),
+        ]
+        for r, (label, key) in enumerate(labels):
+            s = stats[key]
+            self._stats.setItem(r, 0, QTableWidgetItem(label))
+            for c, field in enumerate(("avg", "min", "max", "total"), start=1):
+                item = QTableWidgetItem(format_inr(s[field]))
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self._stats.setItem(r, c, item)
 
     def _render(self, html: str) -> None:
         """Load chart HTML into the web view.
@@ -196,10 +244,10 @@ class DashboardView(QWidget):
     def _load_table(self) -> None:
         rows = analytics.transactions(self._db, self.current_filter())
         self._table.setRowCount(len(rows))
-        for r, (txn_date, desc, amount, direction, txn_type, _kw, category) in enumerate(rows):
+        for r, (txn_date, desc, amount, direction, txn_type, source, category, sub) in enumerate(rows):
             cells = [
                 txn_date, desc, format_inr(amount), direction, txn_type or "",
-                categorization.display_label(category),
+                source or "", categorization.display_label(category), sub or "",
             ]
             for c, val in enumerate(cells):
                 item = QTableWidgetItem(str(val))

@@ -9,6 +9,7 @@ from kosha import crypto
 from kosha.db import Database
 from kosha.ui.categorization_view import CategorizationView
 from kosha.ui.main_window import MainWindow
+from kosha.ui.rules_view import RulesView
 from kosha.ui.unlock import UnlockDialog
 
 FAST = crypto.Argon2Params(time_cost=1, memory_cost=8192, parallelism=1)
@@ -173,6 +174,52 @@ def test_review_row_assign_is_direction_scoped(tmp_path):
     pending = {(k.keyword, k.direction) for k in cat.unreviewed_keywords(db)}
     assert ("SWIGGY LIMITED", "debit") in pending
     assert ("SWIGGY LIMITED", "credit") not in pending
+    db.lock()
+
+
+def test_rules_view_edits_a_mapping(tmp_path):
+    db = _make_db(tmp_path)
+    cat.add_rule(db, "SWIGGY LIMITED", "Expense", "Food")
+    view = RulesView(db)
+    # Find and select the SWIGGY rule row.
+    target = next(i for i, r in enumerate(view._rules) if r.keyword == "SWIGGY LIMITED")
+    view._table.selectRow(target)
+    assert view._sub_category.text() == "Food"
+    view._sub_category.setText("Dining")
+    view._on_save()
+    rule = {r.keyword: r for r in cat.list_rules(db)}["SWIGGY LIMITED"]
+    assert rule.sub_category == "Dining"
+    db.lock()
+
+
+def test_rules_view_deletes_a_mapping(tmp_path):
+    db = _make_db(tmp_path)
+    cat.add_rule(db, "SWIGGY LIMITED", "Expense", "Food")
+    view = RulesView(db)
+    target = next(i for i, r in enumerate(view._rules) if r.keyword == "SWIGGY LIMITED")
+    view._table.selectRow(target)
+    # _on_delete pops a modal confirm; exercise the engine + refresh path instead.
+    cat.delete_rule(db, view._rules[target].id)
+    view.refresh()
+    assert "SWIGGY LIMITED" not in {r.keyword for r in cat.list_rules(db)}
+    assert view._table.rowCount() == 0
+    db.lock()
+
+
+def test_main_window_has_rules_tab(tmp_path):
+    db = _make_db(tmp_path)
+    win = MainWindow(db)
+    titles = [win._tabs.tabText(i) for i in range(win._tabs.count())]
+    assert titles == ["Dashboard", "Categorize", "Rules"]
+    win.close()
+
+
+def test_dashboard_has_source_and_subcategory_columns(tmp_path):
+    db = _make_db(tmp_path)
+    from kosha.ui.dashboard_view import DashboardView
+    dash = DashboardView(db)
+    headers = [dash._table.horizontalHeaderItem(c).text() for c in range(dash._table.columnCount())]
+    assert "Source" in headers and "Sub-category" in headers
     db.lock()
 
 

@@ -20,7 +20,7 @@ import sqlcipher3
 
 from . import config, crypto
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class WrongPasswordError(Exception):
@@ -168,6 +168,8 @@ class Database:
                 self._migrate_to_v4(con)
             if current < 5:
                 self._migrate_to_v5(con)
+            # v6 is a view-only change (account 'source' columns); re-applying the
+            # schema below recreates the view, so no dedicated migration is needed.
             con.executescript(_load_schema_sql())
             if current < 3:
                 self._migrate_to_v3(con)

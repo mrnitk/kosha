@@ -61,8 +61,8 @@ class CategorizationView(QWidget):
         detail = QWidget(); dl = QVBoxLayout(detail); dl.setContentsMargins(0, 0, 0, 0)
         self._detail_label = QLabel("Select a keyword to see its transactions")
         dl.addWidget(self._detail_label)
-        self._detail = QTableWidget(0, 4)
-        self._detail.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Dir"])
+        self._detail = QTableWidget(0, 5)
+        self._detail.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Dir", "Source"])
         self._detail.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._detail.verticalHeader().setVisible(False)
         self._detail.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -252,12 +252,13 @@ class CategorizationView(QWidget):
         scope = f"{keyword} ({direction})" if direction else keyword
         self._detail_label.setText(f"<b>{len(rows)}</b> transaction(s) in <b>{scope}</b>")
         self._detail.setRowCount(len(rows))
-        for r, (txn_date, desc, amount, txn_direction, _cat, _sub) in enumerate(rows):
+        for r, (txn_date, desc, amount, txn_direction, _cat, _sub, source) in enumerate(rows):
             self._detail.setItem(r, 0, QTableWidgetItem(str(txn_date)))
             self._detail.setItem(r, 1, QTableWidgetItem(desc))
             amt = QTableWidgetItem(format_inr(amount)); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._detail.setItem(r, 2, amt)
             self._detail.setItem(r, 3, QTableWidgetItem(txn_direction))
+            self._detail.setItem(r, 4, QTableWidgetItem(source or ""))
 
     def assign(self, keywords, category: str, sub_category: str = "",
                priority: int = 0, excluded: bool = False, direction: str | None = None) -> None:

@@ -11,7 +11,7 @@
 ; never touches the network. The installer only lays down the program files.
 
 #define AppName "Kosha"
-#define AppVersion "3.0.0"
+#define AppVersion "3.1.0"
 #define AppPublisher "Kosha"
 #define AppExeName "Kosha.exe"
 

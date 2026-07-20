@@ -16,6 +16,7 @@ from ..parsers import REGISTRY
 from . import theme
 from .categorization_view import CategorizationView
 from .dashboard_view import DashboardView
+from .rules_view import RulesView
 
 _IMPORT_FILTER = "Statements (*.xls *.xlsx *.csv *.pdf);;All files (*)"
 _IMPORT_SUFFIXES = {".xls", ".xlsx", ".csv", ".pdf"}
@@ -32,12 +33,19 @@ class MainWindow(QMainWindow):
 
         self._dashboard = DashboardView(db)
         self._view = CategorizationView(db)
+        self._rules = RulesView(db)
         self._view.changed.connect(self._update_status)
         self._view.changed.connect(self._dashboard.refresh)
+        self._view.changed.connect(self._rules.refresh)
+        # Editing a rule re-resolves history, so refresh the other views.
+        self._rules.changed.connect(self._dashboard.refresh)
+        self._rules.changed.connect(self._view.refresh)
+        self._rules.changed.connect(self._update_status)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._view, "Categorize")
+        self._tabs.addTab(self._rules, "Rules")
         self.setCentralWidget(self._tabs)
 
         self._build_menu()
@@ -107,6 +115,7 @@ class MainWindow(QMainWindow):
             return
 
         self._view.refresh()
+        self._rules.refresh()
         self._dashboard.reset_filter_bounds()
         self._dashboard.refresh()
         self._update_status()
@@ -142,6 +151,7 @@ class MainWindow(QMainWindow):
             return
 
         self._view.refresh()
+        self._rules.refresh()
         self._dashboard.reset_filter_bounds()
         self._dashboard.refresh()
         self._update_status()

@@ -289,6 +289,47 @@ def update_rule(
     con.commit()
 
 
+def edit_rule(
+    db: Database,
+    rule_id: int,
+    *,
+    keyword: str,
+    category: str,
+    sub_category: Optional[str],
+    priority: int,
+    excluded: bool,
+    direction: Optional[str],
+) -> None:
+    """Fully rewrite an existing rule, incl. renaming its keyword/direction.
+
+    Used by the Rules editor. The keyword is re-normalized so it still matches
+    the transactions it's meant to. If the new (keyword, direction) collides with
+    a *different* rule, that other rule is removed first so a keyword+direction
+    keeps mapping to exactly one rule.
+    """
+    norm = features.normalize_keyword(keyword)
+    if not norm:
+        raise ValueError("keyword is empty after normalization")
+    category = normalize_category(category)
+    direction = normalize_direction(direction)
+    sub = sub_category.strip() if sub_category and sub_category.strip() else None
+    exc = 1 if excluded else 0
+    con = db.connection
+    try:
+        clash = _find_rule_id(con, norm, direction)
+        if clash is not None and clash != rule_id:
+            con.execute("DELETE FROM category_rules WHERE id=?", (clash,))
+        con.execute(
+            "UPDATE category_rules SET keyword=?, category=?, sub_category=?, "
+            "priority=?, excluded=?, direction=? WHERE id=?",
+            (norm, category, sub, priority, exc, direction, rule_id),
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+
+
 def delete_rule(db: Database, rule_id: int) -> None:
     con = db.connection
     con.execute("DELETE FROM category_rules WHERE id=?", (rule_id,))
@@ -387,7 +428,7 @@ def transactions_for_keyword(db: Database, keyword: str, limit: int = 500,
     return db.connection.execute(
         f"""
         SELECT txn_date, raw_description, amount, direction,
-               effective_category, effective_sub_category
+               effective_category, effective_sub_category, account_name
         FROM v_transactions_resolved
         WHERE {clause}
         ORDER BY txn_date DESC, id DESC

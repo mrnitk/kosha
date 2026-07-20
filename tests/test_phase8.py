@@ -218,9 +218,12 @@ def test_migration_adds_exclude_and_direction_columns(tmp_path):
 
     d2 = Database(db_file=db_file, salt_file=salt_file)
     d2.unlock(PW)                                     # triggers _migrate
-    assert d2.connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert d2.connection.execute("PRAGMA user_version").fetchone()[0] == 6
     cols = {r[1] for r in d2.connection.execute("PRAGMA table_info(category_rules)")}
     assert {"excluded", "direction"} <= cols
     tcols = {r[1] for r in d2.connection.execute("PRAGMA table_info(transactions)")}
     assert "excluded_override" in tcols
+    # v6 view gains the account 'source' columns.
+    vcols = {r[1] for r in d2.connection.execute("PRAGMA table_info(v_transactions_resolved)")}
+    assert {"account_name", "account_type"} <= vcols
     d2.lock()

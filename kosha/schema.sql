@@ -88,8 +88,11 @@ SELECT
         CASE t.direction WHEN 'credit' THEN 'Income' ELSE 'Expense' END
     ) AS effective_category,
     COALESCE(t.sub_category_override, br.sub_category) AS effective_sub_category,
-    COALESCE(t.excluded_override, br.excluded, 0) AS effective_excluded
+    COALESCE(t.excluded_override, br.excluded, 0) AS effective_excluded,
+    a.name AS account_name,          -- 'source': which bank/card the txn came from
+    a.account_type AS account_type   -- 'bank' | 'credit_card'
 FROM transactions t
+LEFT JOIN accounts a ON a.id = t.account_id
 LEFT JOIN (
     SELECT keyword, tgt_direction, category, sub_category, excluded FROM (
         SELECT r.keyword AS keyword, d.dir AS tgt_direction,

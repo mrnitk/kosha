@@ -194,17 +194,59 @@ def month_over_month(db: Database, flt: Filter):
 
 
 def transactions(db: Database, flt: Filter, limit: int = 500):
-    """Detail rows for drill-down, newest first."""
+    """Detail rows for drill-down, newest first.
+
+    Columns: date, description, amount, direction, txn_type, source
+    (account name), category, sub_category.
+    """
     where, params = flt.where()
     sql = f"""
-        SELECT txn_date, raw_description, amount, direction,
-               txn_type, merchant_keyword, effective_category
+        SELECT txn_date, raw_description, amount, direction, txn_type,
+               account_name, effective_category,
+               COALESCE(effective_sub_category, '') AS sub
         FROM v_transactions_resolved
         WHERE {where}
         ORDER BY txn_date DESC, id DESC
         LIMIT ?
     """
     return db.connection.execute(sql, [*params, limit]).fetchall()
+
+
+def list_accounts(db: Database) -> list[tuple[int, str]]:
+    """(id, name) for every account, for the dashboard's Source filter."""
+    return db.connection.execute(
+        "SELECT id, name FROM accounts ORDER BY name"
+    ).fetchall()
+
+
+def monthly_stats(db: Database, flt: Filter) -> dict[str, dict[str, float]]:
+    """Per-month average/min/max/total for Income, Expense and Savings.
+
+    Aggregates the monthly income/expense/savings series, then reduces across the
+    months that actually have data. Empty series yield zeros. Keys: 'Income',
+    'Expense', 'Savings'; each maps to {'avg','min','max','total','months'}.
+    """
+    rows = income_expense_savings(db, flt, "month")
+    series = {
+        "Income": [r[1] for r in rows],
+        "Expense": [r[2] for r in rows],
+        "Savings": [r[3] for r in rows],
+    }
+    out: dict[str, dict[str, float]] = {}
+    for label, values in series.items():
+        present = [v for v in values]
+        if present:
+            total = sum(present)
+            out[label] = {
+                "avg": total / len(present),
+                "min": min(present),
+                "max": max(present),
+                "total": total,
+                "months": len(present),
+            }
+        else:
+            out[label] = {"avg": 0.0, "min": 0.0, "max": 0.0, "total": 0.0, "months": 0}
+    return out
 
 
 def distinct_sub_categories(db: Database, category: Optional[str] = None) -> list[str]:
