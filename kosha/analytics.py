@@ -76,54 +76,97 @@ def spend_by_period_category(db: Database, flt: Filter, granularity: str = "mont
 
 
 def income_expense_savings(db: Database, flt: Filter, granularity: str = "month"):
-    """Rows (period, income, expense, savings, savings_rate) per period."""
+    """Rows (period, income, expense, savings, savings_rate) per period.
+
+    Category-based: Income/Expense/Savings come from ``effective_category`` (so a
+    debit reclassified as Savings counts as savings, not spend). Savings rate is
+    savings as a share of income.
+    """
     where, params = flt.where()
     period = _period_expr(granularity)
     sql = f"""
         SELECT {period} AS period,
-               SUM(CASE WHEN direction='credit' THEN amount ELSE 0 END) AS income,
-               SUM(CASE WHEN direction='debit'  THEN amount ELSE 0 END) AS expense
+               SUM(CASE WHEN effective_category='Income'  THEN amount ELSE 0 END) AS income,
+               SUM(CASE WHEN effective_category='Expense' THEN amount ELSE 0 END) AS expense,
+               SUM(CASE WHEN effective_category='Savings' THEN amount ELSE 0 END) AS savings
         FROM v_transactions_resolved
         WHERE {where}
         GROUP BY period
         ORDER BY period
     """
     out = []
-    for period, income, expense in db.connection.execute(sql, params).fetchall():
+    for period, income, expense, savings in db.connection.execute(sql, params).fetchall():
         income = income or 0.0
         expense = expense or 0.0
-        savings = income - expense
+        savings = savings or 0.0
         rate = (savings / income * 100.0) if income else 0.0
         out.append((period, income, expense, savings, rate))
     return out
 
 
-def category_totals(db: Database, flt: Filter, direction: str = "debit"):
-    """Rows (category, total, count) for the period — feeds pie/summary."""
+def category_totals(db: Database, flt: Filter):
+    """Rows (category, total, count) across Income/Expense/Savings."""
     where, params = flt.where()
     sql = f"""
         SELECT effective_category, SUM(amount) AS total, COUNT(*) AS n
         FROM v_transactions_resolved
-        WHERE direction=? AND {where}
+        WHERE {where}
         GROUP BY effective_category
         ORDER BY total DESC
     """
-    return db.connection.execute(sql, [direction, *params]).fetchall()
+    return db.connection.execute(sql, params).fetchall()
 
 
-def top_merchants(db: Database, flt: Filter, limit: int = 10, direction: str = "debit"):
-    """Rows (merchant_keyword, total, count) — highest spend first."""
+def spend_by_period_subcategory(db: Database, flt: Filter, granularity: str = "month"):
+    """Rows (period, sub_category, total) for Expense — the where-money-goes bar.
+
+    Unassigned expense (no sub-category yet) is bucketed as 'Unassigned'.
+    """
+    where, params = flt.where()
+    period = _period_expr(granularity)
+    sql = f"""
+        SELECT {period} AS period,
+               COALESCE(effective_sub_category, 'Unassigned') AS sub,
+               SUM(amount) AS total
+        FROM v_transactions_resolved
+        WHERE effective_category='Expense' AND {where}
+        GROUP BY period, sub
+        ORDER BY period, total DESC
+    """
+    return db.connection.execute(sql, params).fetchall()
+
+
+def subcategory_totals(db: Database, flt: Filter, category: str = "Expense"):
+    """Rows (sub_category, total, count) within a category — feeds the donut."""
+    where, params = flt.where()
+    sql = f"""
+        SELECT COALESCE(effective_sub_category, 'Unassigned') AS sub,
+               SUM(amount) AS total, COUNT(*) AS n
+        FROM v_transactions_resolved
+        WHERE effective_category=? AND {where}
+        GROUP BY sub
+        ORDER BY total DESC
+    """
+    return db.connection.execute(sql, [category, *params]).fetchall()
+
+
+def top_merchants(db: Database, flt: Filter, limit: int = 10):
+    """Rows (merchant_keyword, total, count) for Expense — highest spend first.
+
+    Expense-category-based, so a debit reclassified as Savings (an investment)
+    isn't counted as merchant spend.
+    """
     where, params = flt.where()
     sql = f"""
         SELECT merchant_keyword, SUM(amount) AS total, COUNT(*) AS n
         FROM v_transactions_resolved
-        WHERE direction=? AND merchant_keyword IS NOT NULL AND merchant_keyword<>''
-              AND {where}
+        WHERE effective_category='Expense' AND merchant_keyword IS NOT NULL
+              AND merchant_keyword<>'' AND {where}
         GROUP BY merchant_keyword
         ORDER BY total DESC
         LIMIT ?
     """
-    return db.connection.execute(sql, [direction, *params, limit]).fetchall()
+    return db.connection.execute(sql, [*params, limit]).fetchall()
 
 
 def month_over_month(db: Database, flt: Filter):

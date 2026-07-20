@@ -1,21 +1,20 @@
-"""Review screen: bucket uncategorized merchant keywords into categories.
+"""Review screen: give merchant keywords a sub-category (and reclassify).
 
-Left panel lists uncategorized keywords ranked by total spend (the biggest
-unbucketed money first). Selecting one and assigning a category writes a rule
-via ``categorization.add_rule`` — which resolves retroactively — and the row
-drops out of the list. The right panel shows live category totals.
-
-The widget keeps no state of its own beyond the current selection; every action
-re-reads from the database so it always reflects the true resolution.
+Every transaction already has a category by direction (credit->Income,
+debit->Expense), so this screen is about the descriptive detail: select one or
+more keywords ranked by amount, optionally inspect the transactions inside a
+keyword, then assign a sub-category (Food, Rent, ...) and, if needed, a category
+(e.g. mark an investment as Savings). Assignment writes rules that resolve
+retroactively, and reviewed keywords drop off the list.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QCompleter, QFormLayout, QGroupBox,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox,
+    QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import categorization as cat
@@ -23,9 +22,8 @@ from ..db import Database
 
 
 class CategorizationView(QWidget):
-    """Uncategorized-keyword review and rule assignment."""
+    """Keyword review, bulk assignment, and per-keyword drill-in."""
 
-    #: emitted after any change that affects resolution (assignment, refresh)
     changed = Signal()
 
     def __init__(self, db: Database, parent=None):
@@ -39,53 +37,70 @@ class CategorizationView(QWidget):
     def _build(self) -> None:
         root = QHBoxLayout(self)
 
-        # Left: uncategorized keywords + assignment form.
         left = QVBoxLayout()
-        left.addWidget(QLabel("<b>Uncategorized keywords</b> (highest spend first)"))
+        left.addWidget(QLabel("<b>Keywords to review</b> (no sub-category yet — highest amount first)"))
 
-        self._table = QTableWidget(0, 3)
-        self._table.setHorizontalHeaderLabels(["Keyword", "Txns", "Total spend"])
+        split = QSplitter(Qt.Vertical)
+
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(["Keyword", "Txns", "Amount", "Default"])
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self._table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)  # multi-select
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        for c in (1, 2, 3):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         self._table.itemSelectionChanged.connect(self._on_select)
-        left.addWidget(self._table, stretch=1)
+        split.addWidget(self._table)
 
+        # Drill-in: transactions inside the selected keyword.
+        detail = QWidget(); dl = QVBoxLayout(detail); dl.setContentsMargins(0, 0, 0, 0)
+        self._detail_label = QLabel("Select a keyword to see its transactions")
+        dl.addWidget(self._detail_label)
+        self._detail = QTableWidget(0, 4)
+        self._detail.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Dir"])
+        self._detail.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._detail.verticalHeader().setVisible(False)
+        self._detail.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        dl.addWidget(self._detail)
+        split.addWidget(detail)
+        split.setSizes([340, 240])
+
+        left.addWidget(split, stretch=1)
         left.addWidget(self._build_assign_box())
-        root.addLayout(left, stretch=2)
+        root.addLayout(left, stretch=3)
 
         # Right: live category totals.
         right = QVBoxLayout()
-        right.addWidget(QLabel("<b>Category totals</b> (spending)"))
+        right.addWidget(QLabel("<b>Category totals</b>"))
         self._totals = QTableWidget(0, 3)
         self._totals.setHorizontalHeaderLabels(["Category", "Total", "Txns"])
         self._totals.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._totals.verticalHeader().setVisible(False)
         self._totals.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         right.addWidget(self._totals, stretch=1)
-
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.refresh)
+        refresh = QPushButton("Refresh"); refresh.clicked.connect(self.refresh)
         right.addWidget(refresh)
         root.addLayout(right, stretch=1)
 
     def _build_assign_box(self) -> QGroupBox:
-        box = QGroupBox("Assign selected keyword")
+        box = QGroupBox("Assign selected keyword(s)")
         form = QFormLayout(box)
 
         self._selected_label = QLabel("—")
-        form.addRow("Keyword:", self._selected_label)
+        form.addRow("Selected:", self._selected_label)
 
-        self._category = QComboBox(); self._category.setEditable(True)
-        self._category.setInsertPolicy(QComboBox.NoInsert)
+        self._category = QComboBox()
+        self._category.addItems(cat.CATEGORIES)
         form.addRow("Category:", self._category)
 
         self._sub_category = QLineEdit()
+        self._sub_category.setPlaceholderText("e.g. Food, Rent, Investments")
+        self._completer = QCompleter([])
+        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._sub_category.setCompleter(self._completer)
         form.addRow("Sub-category:", self._sub_category)
 
         self._priority = QSpinBox(); self._priority.setRange(-100, 100)
@@ -102,63 +117,89 @@ class CategorizationView(QWidget):
     def refresh(self) -> None:
         self._load_keywords()
         self._load_totals()
-        self._load_categories()
+        self._sub_category.completer().setModel(
+            _string_model(cat.distinct_sub_categories(self._db))
+        )
         self.changed.emit()
 
     def _load_keywords(self) -> None:
-        keywords = cat.uncategorized_keywords(self._db)
-        self._table.setRowCount(len(keywords))
-        for row, ks in enumerate(keywords):
-            kw_item = QTableWidgetItem(ks.keyword)
-            kw_item.setData(Qt.UserRole, ks.keyword)
-            n_item = QTableWidgetItem(str(ks.txn_count))
-            n_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            amt_item = QTableWidgetItem(f"{ks.total_amount:,.2f}")
-            amt_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self._table.setItem(row, 0, kw_item)
-            self._table.setItem(row, 1, n_item)
-            self._table.setItem(row, 2, amt_item)
+        self._keywords = cat.unreviewed_keywords(self._db)
+        self._table.setRowCount(len(self._keywords))
+        for row, ks in enumerate(self._keywords):
+            kw = QTableWidgetItem(ks.keyword); kw.setData(Qt.UserRole, ks.keyword)
+            n = QTableWidgetItem(str(ks.txn_count)); n.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            amt = QTableWidgetItem(f"{ks.total_amount:,.2f}"); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            default = QTableWidgetItem(ks.suggested_category)
+            self._table.setItem(row, 0, kw)
+            self._table.setItem(row, 1, n)
+            self._table.setItem(row, 2, amt)
+            self._table.setItem(row, 3, default)
 
     def _load_totals(self) -> None:
         totals = cat.category_totals(self._db)
         self._totals.setRowCount(len(totals))
         for row, (category, total, n) in enumerate(totals):
             self._totals.setItem(row, 0, QTableWidgetItem(category))
-            amt = QTableWidgetItem(f"{total:,.2f}")
-            amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            amt = QTableWidgetItem(f"{total:,.2f}"); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._totals.setItem(row, 1, amt)
-            n_item = QTableWidgetItem(str(n))
-            n_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self._totals.setItem(row, 2, n_item)
-
-    def _load_categories(self) -> None:
-        current = self._category.currentText()
-        self._category.clear()
-        self._category.addItems(cat.distinct_categories(self._db))
-        self._category.setCurrentText(current)
+            ni = QTableWidgetItem(str(n)); ni.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._totals.setItem(row, 2, ni)
 
     # --- interaction ---------------------------------------------------------
 
-    def selected_keyword(self) -> str | None:
-        items = self._table.selectedItems()
-        if not items:
-            return None
-        return self._table.item(items[0].row(), 0).data(Qt.UserRole)
+    def selected_keywords(self) -> list[str]:
+        rows = {i.row() for i in self._table.selectedItems()}
+        return [self._table.item(r, 0).data(Qt.UserRole) for r in sorted(rows)]
 
     def _on_select(self) -> None:
-        kw = self.selected_keyword()
-        self._selected_label.setText(kw or "—")
-        self._assign_btn.setEnabled(kw is not None)
+        kws = self.selected_keywords()
+        self._assign_btn.setEnabled(bool(kws))
+        if not kws:
+            self._selected_label.setText("—")
+            self._assign_btn.setText("Assign")
+            self._detail.setRowCount(0)
+            self._detail_label.setText("Select a keyword to see its transactions")
+            return
+        if len(kws) == 1:
+            self._selected_label.setText(kws[0])
+            self._assign_btn.setText("Assign")
+            # Default the category from the keyword's dominant direction.
+            ks = next((k for k in self._keywords if k.keyword == kws[0]), None)
+            if ks:
+                self._category.setCurrentText(ks.suggested_category)
+            self._load_detail(kws[0])
+        else:
+            self._selected_label.setText(f"{len(kws)} keywords")
+            self._assign_btn.setText(f"Assign {len(kws)} keywords")
+            self._detail.setRowCount(0)
+            self._detail_label.setText("Multiple keywords selected — assign applies to all")
 
-    def assign(self, keyword: str, category: str, sub_category: str = "", priority: int = 0) -> None:
-        """Programmatic assignment (also used by the Assign button and tests)."""
-        cat.add_rule(self._db, keyword, category, sub_category or None, priority)
+    def _load_detail(self, keyword: str) -> None:
+        rows = cat.transactions_for_keyword(self._db, keyword)
+        self._detail_label.setText(f"<b>{len(rows)}</b> transaction(s) in <b>{keyword}</b>")
+        self._detail.setRowCount(len(rows))
+        for r, (txn_date, desc, amount, direction, _cat, _sub) in enumerate(rows):
+            self._detail.setItem(r, 0, QTableWidgetItem(str(txn_date)))
+            self._detail.setItem(r, 1, QTableWidgetItem(desc))
+            amt = QTableWidgetItem(f"{amount:,.2f}"); amt.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._detail.setItem(r, 2, amt)
+            self._detail.setItem(r, 3, QTableWidgetItem(direction))
+
+    def assign(self, keywords, category: str, sub_category: str = "", priority: int = 0) -> None:
+        """Assign a category/sub-category to one or many keywords (also for tests)."""
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        cat.assign_many(self._db, keywords, category, sub_category or None, priority)
         self.refresh()
 
     def _on_assign(self) -> None:
-        kw = self.selected_keyword()
-        category = self._category.currentText().strip()
-        if not kw or not category:
+        kws = self.selected_keywords()
+        if not kws:
             return
-        self.assign(kw, category, self._sub_category.text().strip(), self._priority.value())
+        self.assign(kws, self._category.currentText(), self._sub_category.text().strip(), self._priority.value())
         self._sub_category.clear()
+
+
+def _string_model(items):
+    from PySide6.QtCore import QStringListModel
+    return QStringListModel(list(items))

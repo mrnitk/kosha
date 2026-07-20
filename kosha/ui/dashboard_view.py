@@ -8,9 +8,12 @@ the analytics calls so it can be tested without rendering.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import date
+from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDateEdit, QHBoxLayout, QLabel, QPushButton,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -25,6 +28,8 @@ class DashboardView(QWidget):
         super().__init__(parent)
         self._db = db
         self._web = None
+        self._html_file: Path | None = None
+        self._dark = False
         self._build()
         self.reset_filter_bounds()
         self.refresh()
@@ -126,19 +131,40 @@ class DashboardView(QWidget):
         """Build the dashboard's combined chart HTML for the current filter."""
         flt = self.current_filter()
         gran = self.granularity()
+        tmpl = "plotly_dark" if self._dark else "plotly_white"
         figs = [
-            charts.spend_stacked_bar(analytics.spend_by_period_category(self._db, flt, gran), gran),
-            charts.income_expense_line(analytics.income_expense_savings(self._db, flt, gran)),
-            charts.category_pie(analytics.category_totals(self._db, flt)),
-            charts.top_merchants_bar(analytics.top_merchants(self._db, flt)),
+            charts.income_expense_line(analytics.income_expense_savings(self._db, flt, gran), tmpl),
+            charts.spend_stacked_bar(analytics.spend_by_period_subcategory(self._db, flt, gran), gran, tmpl),
+            charts.category_pie(analytics.subcategory_totals(self._db, flt, "Expense"), "Expense share by sub-category", tmpl),
+            charts.top_merchants_bar(analytics.top_merchants(self._db, flt), tmpl),
         ]
-        return charts.dashboard_html(figs)
+        return charts.dashboard_html(figs, dark=self._dark)
+
+    def set_dark(self, dark: bool) -> None:
+        """Switch chart theme to match the app; re-render."""
+        self._dark = dark
+        self.refresh()
 
     def refresh(self) -> None:
         html = self.build_html()
-        if hasattr(self._web, "setHtml"):
-            self._web.setHtml(html)
+        self._render(html)
         self._load_table()
+
+    def _render(self, html: str) -> None:
+        """Load chart HTML into the web view.
+
+        QWebEngineView.setHtml() caps content at ~2 MB (it encodes to a data:
+        URL), and our inline-Plotly page is far larger, so we write it to a temp
+        file and load it by file URL instead — no size limit.
+        """
+        if not hasattr(self._web, "setUrl"):
+            return
+        if self._html_file is None:
+            fd, path = tempfile.mkstemp(prefix="kosha_dashboard_", suffix=".html")
+            os.close(fd)
+            self._html_file = Path(path)
+        self._html_file.write_text(html, encoding="utf-8")
+        self._web.setUrl(QUrl.fromLocalFile(str(self._html_file)))
 
     def _load_table(self) -> None:
         rows = analytics.transactions(self._db, self.current_filter())

@@ -49,17 +49,30 @@ CREATE INDEX IF NOT EXISTS idx_txn_keyword     ON transactions(merchant_keyword)
 CREATE INDEX IF NOT EXISTS idx_rules_keyword   ON category_rules(keyword);
 
 -- Effective category resolution, evaluated live so new/edited rules apply
--- retroactively to all history with no data rewrite:
---   COALESCE(manual override, best matching rule, 'Uncategorized')
+-- retroactively to all history with no data rewrite.
+--
+-- Two levels:
+--   * category     in {Income, Expense, Savings}. Defaults by direction
+--     (credit -> Income, debit -> Expense); a rule/override can reclassify
+--     (e.g. mark an investment debit as Savings).
+--   * sub_category  free-text detail (Food, Rent, Investments, ...).
+-- Precedence: manual override > best matching rule > direction default.
 -- "best matching rule" = highest priority for a keyword, newest id breaks ties.
-CREATE VIEW IF NOT EXISTS v_transactions_resolved AS
+-- Dropped-and-recreated so re-applying the schema (on migration) always picks
+-- up a changed definition.
+DROP VIEW IF EXISTS v_transactions_resolved;
+CREATE VIEW v_transactions_resolved AS
 SELECT
     t.id, t.txn_date, t.raw_description, t.amount, t.direction,
     t.account_id, t.txn_type, t.merchant_keyword,
     t.category_override, t.sub_category_override,
     t.import_batch_id, t.dedup_hash,
-    COALESCE(t.category_override, br.category, 'Uncategorized') AS effective_category,
-    COALESCE(t.sub_category_override, br.sub_category)          AS effective_sub_category
+    COALESCE(
+        t.category_override,
+        br.category,
+        CASE t.direction WHEN 'credit' THEN 'Income' ELSE 'Expense' END
+    ) AS effective_category,
+    COALESCE(t.sub_category_override, br.sub_category) AS effective_sub_category
 FROM transactions t
 LEFT JOIN (
     SELECT keyword, category, sub_category FROM (

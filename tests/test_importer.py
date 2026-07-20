@@ -87,3 +87,36 @@ def test_two_accounts_do_not_dedup_against_each_other(db):
     import_file(db, p, FIXTURE, a1)
     res = import_file(db, p, FIXTURE, a2)     # same file, different account
     assert res.inserted == 9                  # account is part of the dedup hash
+
+
+# --- bulk import (Phase 7) ---------------------------------------------------
+
+CARD_FIXTURE = Path(__file__).parent / "fixtures" / "hdfc_card_sample.xls"
+
+
+def test_detect_parser_picks_right_one():
+    from kosha.importer import detect_parser
+    from kosha.parsers.hdfc_bank import HdfcBankParser
+    from kosha.parsers.hdfc_card import HdfcCardParser
+    assert isinstance(detect_parser(FIXTURE), HdfcBankParser)
+    assert isinstance(detect_parser(CARD_FIXTURE), HdfcCardParser)
+    assert detect_parser(Path(__file__)) is None      # not a statement
+
+
+def test_import_paths_bulk_auto_files_by_institution(db):
+    from kosha.importer import import_paths
+    res = import_paths(db, [FIXTURE, CARD_FIXTURE])
+    assert len(res.imported) == 2
+    assert res.total_inserted == 9 + 8
+    assert not res.unrecognized and not res.failed
+    # One account per institution, auto-named.
+    names = {r[0] for r in db.connection.execute("SELECT name FROM accounts").fetchall()}
+    assert names == {"HDFC Bank", "HDFC Card"}
+
+
+def test_import_paths_reports_unrecognized(db, tmp_path):
+    from kosha.importer import import_paths
+    junk = tmp_path / "notes.txt"; junk.write_text("hi")
+    res = import_paths(db, [FIXTURE, junk])
+    assert res.total_inserted == 9
+    assert res.unrecognized == ["notes.txt"]

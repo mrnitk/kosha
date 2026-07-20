@@ -20,7 +20,7 @@ import sqlcipher3
 
 from . import config, crypto
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class WrongPasswordError(Exception):
@@ -155,10 +155,36 @@ class Database:
                 f"database schema v{current} is newer than this app (v{SCHEMA_VERSION})"
             )
         if current < SCHEMA_VERSION:
-            # v0 -> v1: ensure all tables exist (idempotent), then stamp version.
+            # Re-apply schema (idempotent tables; the view is dropped+recreated).
             con.executescript(_load_schema_sql())
+            if current < 3:
+                self._migrate_to_v3(con)
             con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             con.commit()
+
+    @staticmethod
+    def _migrate_to_v3(con: sqlcipher3.Connection) -> None:
+        """Normalize free-text categories to the Income/Expense/Savings set.
+
+        Earlier builds let users type category names; fold known variants onto
+        the canonical values so the new fixed-category model is consistent.
+        """
+        remap = [
+            ("Savings", ("saving", "savings", "invest", "investment")),
+            ("Income", ("income",)),
+            ("Expense", ("expense",)),
+        ]
+        for canonical, variants in remap:
+            marks = ",".join("?" * len(variants))
+            con.execute(
+                f"UPDATE category_rules SET category=? WHERE lower(category) IN ({marks})",
+                (canonical, *variants),
+            )
+            con.execute(
+                f"UPDATE transactions SET category_override=? "
+                f"WHERE category_override IS NOT NULL AND lower(category_override) IN ({marks})",
+                (canonical, *variants),
+            )
 
     def _require_unlocked(self) -> None:
         if self._con is None:

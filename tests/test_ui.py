@@ -41,9 +41,9 @@ def _make_db(tmp_path) -> Database:
 def test_view_lists_uncategorized_ranked(tmp_path):
     db = _make_db(tmp_path)
     view = CategorizationView(db)
-    # ZERODHA (5000) ranks above SWIGGY (500); credit ACME excluded.
-    assert view._table.rowCount() == 2
-    assert view._table.item(0, 0).text() == "ZERODHA"
+    # All unreviewed keywords, ranked by amount: ACME (90000) > ZERODHA > SWIGGY.
+    assert view._table.rowCount() == 3
+    assert view._table.item(0, 0).text() == "ACME EMPLOYER"
     db.lock()
 
 
@@ -52,31 +52,56 @@ def test_view_assign_creates_rule_and_drops_row(tmp_path):
     view = CategorizationView(db)
     before = view._table.rowCount()
 
-    view.assign("SWIGGY LIMITED", "Food", "Delivery")
+    view.assign("SWIGGY LIMITED", "Expense", "Food")
 
     assert view._table.rowCount() == before - 1
-    assert "SWIGGY LIMITED" in [r.keyword for r in cat.list_rules(db)]
-    # New category shows in the totals panel.
+    rules = {r.keyword: r for r in cat.list_rules(db)}
+    assert rules["SWIGGY LIMITED"].sub_category == "Food"
+    # Totals panel shows the fixed categories.
     totals = [view._totals.item(r, 0).text() for r in range(view._totals.rowCount())]
-    assert "Food" in totals
+    assert "Expense" in totals and "Income" in totals
     db.lock()
 
 
-def test_selected_keyword_tracks_selection(tmp_path):
+def test_bulk_assign_multiple_keywords(tmp_path):
+    db = _make_db(tmp_path)
+    view = CategorizationView(db)
+    view.assign(["SWIGGY LIMITED", "ZERODHA"], "Expense", "Misc")
+    keywords = {r.keyword for r in cat.list_rules(db) if r.sub_category == "Misc"}
+    assert keywords == {"SWIGGY LIMITED", "ZERODHA"}
+    db.lock()
+
+
+def test_selected_keywords_tracks_selection(tmp_path):
     db = _make_db(tmp_path)
     view = CategorizationView(db)
     view._table.selectRow(0)
-    assert view.selected_keyword() == "ZERODHA"
+    assert view.selected_keywords() == ["ACME EMPLOYER"]
     db.lock()
 
 
-def test_main_window_status_and_import_menu(tmp_path):
+def test_keyword_detail_shows_transactions(tmp_path):
+    db = _make_db(tmp_path)
+    view = CategorizationView(db)
+    # Select the SWIGGY row (has 2 transactions) and check the drill-in panel.
+    for r in range(view._table.rowCount()):
+        if view._table.item(r, 0).text() == "SWIGGY LIMITED":
+            view._table.selectRow(r)
+            break
+    assert view._detail.rowCount() == 2
+    db.lock()
+
+
+def test_main_window_status_and_theme(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)
     assert "4 transactions" in win.statusBar().currentMessage()
     menus = [m.title() for m in win.menuBar().findChildren(type(win.menuBar().addMenu("x")))]
     assert any("File" in t for t in menus)
-    win.close()  # triggers db.lock via closeEvent
+    assert any("View" in t for t in menus)
+    win._set_theme("dark")           # exercise the theme switch
+    win._set_theme("light")
+    win.close()                      # triggers db.lock via closeEvent
     assert not db.is_unlocked
 
 

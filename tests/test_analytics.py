@@ -42,8 +42,9 @@ def _seed(db: Database) -> None:
             (i, d, f"DESC {kw}", amt, direction, "UPI", kw, f"h{i}"),
         )
     con.commit()
-    cat.add_rule(db, "SWIGGY", "Food")
-    cat.add_rule(db, "AMAZON", "Shopping")
+    cat.add_rule(db, "SWIGGY", "Expense", "Food")
+    cat.add_rule(db, "AMAZON", "Expense", "Shopping")
+    cat.add_rule(db, "ZERODHA", "Savings", "Investments")
 
 
 # --- analytics ---------------------------------------------------------------
@@ -53,11 +54,11 @@ def test_date_bounds(db):
     assert lo == date(2026, 4, 1) and hi == date(2026, 5, 15)
 
 
-def test_spend_by_period_category_month(db):
-    rows = analytics.spend_by_period_category(db, analytics.Filter(), "month")
-    got = {(p, c): t for p, c, t in rows}
+def test_spend_by_period_subcategory_month(db):
+    rows = analytics.spend_by_period_subcategory(db, analytics.Filter(), "month")
+    got = {(p, s): t for p, s, t in rows}
     assert got[("2026-04", "Food")] == 500.0
-    assert got[("2026-04", "Uncategorized")] == 5000.0     # ZERODHA has no rule
+    assert ("2026-04", "Investments") not in got   # ZERODHA is Savings, not Expense
     assert got[("2026-05", "Food")] == 400.0
     assert got[("2026-05", "Shopping")] == 1000.0
 
@@ -67,35 +68,35 @@ def test_income_expense_savings(db):
     by_period = {r[0]: r for r in rows}
     _, income, expense, savings, rate = by_period["2026-04"]
     assert income == 60000.0
-    assert expense == 5500.0
-    assert savings == 54500.0
-    assert round(rate, 2) == round(54500 / 60000 * 100, 2)
+    assert expense == 500.0                         # SWIGGY only; ZERODHA is Savings
+    assert savings == 5000.0                        # ZERODHA reclassified
+    assert round(rate, 2) == round(5000 / 60000 * 100, 2)
 
 
 def test_filter_by_date_range(db):
     flt = analytics.Filter(start=date(2026, 5, 1), end=date(2026, 5, 31))
-    cats = analytics.category_totals(db, flt)
-    labels = {c for c, _t, _n in cats}
-    assert "Food" in labels and "Shopping" in labels
-    assert "Uncategorized" not in labels          # ZERODHA was in April
+    cats = {c for c, _t, _n in analytics.category_totals(db, flt)}
+    assert cats == {"Income", "Expense"}            # no Savings in May
+    subs = {s for s, _t, _n in analytics.subcategory_totals(db, flt, "Expense")}
+    assert subs == {"Food", "Shopping"}
 
 
 def test_filter_by_category(db):
-    flt = analytics.Filter(categories=("Food",))
+    flt = analytics.Filter(categories=("Expense",))
     cats = analytics.category_totals(db, flt)
     assert len(cats) == 1
-    assert cats[0][0] == "Food" and cats[0][1] == 900.0
+    assert cats[0][0] == "Expense" and cats[0][1] == 1900.0   # 500+400+1000
 
 
-def test_top_merchants(db):
-    rows = analytics.top_merchants(db, analytics.Filter(), limit=2)
-    assert rows[0][0] == "ZERODHA"                # 5000 highest
-    assert len(rows) == 2
+def test_top_merchants_expense_only(db):
+    rows = analytics.top_merchants(db, analytics.Filter(), limit=5)
+    names = [r[0] for r in rows]
+    assert "ZERODHA" not in names                   # Savings, not spend
+    assert rows[0][0] == "AMAZON"                   # 1000 highest expense merchant
 
 
 def test_quarter_granularity(db):
     rows = analytics.income_expense_savings(db, analytics.Filter(), "quarter")
-    # Apr + May 2026 both fall in Q2.
     assert all(p == "2026-Q2" for p, *_ in rows)
     assert len(rows) == 1
 
@@ -103,28 +104,28 @@ def test_quarter_granularity(db):
 def test_month_over_month_delta(db):
     rows = analytics.month_over_month(db, analytics.Filter())
     by = {p: (exp, delta) for p, exp, delta in rows}
-    assert by["2026-04"][1] is None               # first period has no prior
-    # May expense 1400 vs April 5500 -> negative delta
-    assert by["2026-05"][0] == 1400.0
-    assert by["2026-05"][1] < 0
+    assert by["2026-04"][1] is None                 # first period has no prior
+    assert by["2026-05"][0] == 1400.0               # May expense
+    assert by["2026-05"][1] > 0                      # 1400 > 500 April
 
 
 def test_transactions_drilldown_respects_filter(db):
-    flt = analytics.Filter(categories=("Food",))
+    flt = analytics.Filter(categories=("Expense",))
     rows = analytics.transactions(db, flt)
-    assert len(rows) == 3                          # 3 SWIGGY txns
-    assert all(r[6] == "Food" for r in rows)       # effective_category column
+    assert len(rows) == 4                            # 3 SWIGGY + 1 AMAZON
+    assert all(r[6] == "Expense" for r in rows)      # effective_category column
 
 
 # --- charts ------------------------------------------------------------------
 
 def test_chart_builders_produce_traces(db):
     flt = analytics.Filter()
-    stacked = charts.spend_stacked_bar(analytics.spend_by_period_category(db, flt), "month")
-    assert len(stacked.data) >= 2                  # one trace per category
+    stacked = charts.spend_stacked_bar(analytics.spend_by_period_subcategory(db, flt), "month")
+    assert len(stacked.data) >= 2                    # one trace per sub-category
     line = charts.income_expense_line(analytics.income_expense_savings(db, flt))
     assert any(t.type == "scatter" for t in line.data)   # savings-rate line
-    pie = charts.category_pie(analytics.category_totals(db, flt))
+    assert sum(1 for t in line.data if t.type == "bar") == 3   # income/expense/savings
+    pie = charts.category_pie(analytics.subcategory_totals(db, flt, "Expense"))
     assert pie.data[0].type == "pie"
 
 
@@ -137,7 +138,7 @@ def test_color_map_is_stable():
 def test_dashboard_html_inlines_plotly_once(db):
     flt = analytics.Filter()
     figs = [
-        charts.category_pie(analytics.category_totals(db, flt)),
+        charts.category_pie(analytics.subcategory_totals(db, flt, "Expense")),
         charts.top_merchants_bar(analytics.top_merchants(db, flt)),
     ]
     html = charts.dashboard_html(figs)

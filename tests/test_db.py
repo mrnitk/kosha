@@ -145,3 +145,21 @@ def test_encrypted_at_rest(db, tmp_path):
     raw = (tmp_path / "kosha.db").read_bytes()
     assert b"SECRET_MERCHANT_MARKER" not in raw
     assert raw[:6] != b"SQLite"  # header is encrypted too
+
+
+def test_v3_migration_normalizes_categories(tmp_path):
+    # Simulate a pre-v3 vault that used free-text category values.
+    d = Database(db_file=tmp_path / "k.db", salt_file=tmp_path / "k.salt")
+    d.create(PW, params=FAST)
+    con = d.connection
+    con.execute("INSERT INTO accounts(id,name,account_type,institution) VALUES (1,'A','bank','x')")
+    con.execute("INSERT INTO category_rules(keyword,category,sub_category) VALUES ('K','Saving','Inv')")
+    con.execute("PRAGMA user_version = 2")
+    con.commit()
+    d.lock()
+
+    d.unlock(PW)                       # triggers migration to v3
+    assert d.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    cat = d.connection.execute("SELECT category FROM category_rules WHERE keyword='K'").fetchone()[0]
+    assert cat == "Savings"            # 'Saving' -> canonical
+    d.lock()
