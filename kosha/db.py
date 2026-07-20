@@ -46,8 +46,8 @@ class Database:
     """
 
     def __init__(self, db_file: Optional[Path] = None, salt_file: Optional[Path] = None):
-        self._db_path = db_file or config.db_path()
-        self._salt_path = salt_file or config.salt_path()
+        self._db_path = Path(db_file) if db_file else config.db_path()
+        self._salt_path = Path(salt_file) if salt_file else config.salt_path()
         self._con: Optional[sqlcipher3.Connection] = None
 
     # --- state queries -------------------------------------------------------

@@ -22,6 +22,8 @@ Sample/
 build/
 dist/
 *.spec.bak
+build_log*.txt
+installer/Output/
 
 # --- OS / editor ---
 Thumbs.db

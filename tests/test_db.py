@@ -52,6 +52,15 @@ def test_salt_file_roundtrip(tmp_path):
 
 # --- lifecycle ---------------------------------------------------------------
 
+def test_accepts_string_paths(tmp_path):
+    # Frozen entry point passes str paths; Database must coerce to Path.
+    d = Database(db_file=str(tmp_path / "k.db"), salt_file=str(tmp_path / "k.salt"))
+    assert not d.exists
+    d.create(PW, params=FAST)
+    assert d.exists
+    d.lock()
+
+
 def test_create_then_unlock(db):
     assert not db.exists
     db.create(PW, params=FAST)
