@@ -108,14 +108,26 @@ def derive_merchant_keyword(narration: str, txn_type: str) -> str | None:
     return candidate or None
 
 
+# Noise tokens common in card descriptions that aren't part of the merchant.
+_TOKEN_NOISE = {"WWW"}
+
+
 def _keyword_from_tokens(narration: str) -> str | None:
-    """Merchant name from a space-delimited narration, dropping prefixes/refs."""
+    """Merchant name from a space-delimited narration, dropping prefixes/refs.
+
+    Handles card descriptions too: payment-gateway prefixes like ``PYU*Swiggy``
+    or ``RAZ*Tijori`` are stripped to the merchant after the ``*``.
+    """
     skip_prefixes = _ATM_PREFIXES + _CARD_PREFIXES
-    tokens = _normalize(narration).split()
-    kept = [
-        t for t in tokens
-        if t not in skip_prefixes and not _looks_like_ref(t) and "X" * 4 not in t
-    ]
+    kept: list[str] = []
+    for tok in _normalize(narration).split():
+        if "*" in tok:                       # gateway prefix, e.g. PYU*SWIGGY
+            tok = tok.split("*", 1)[1]
+        if not tok or tok in skip_prefixes or tok in _TOKEN_NOISE:
+            continue
+        if _looks_like_ref(tok) or "XXXX" in tok:
+            continue
+        kept.append(tok)
     return " ".join(kept) or None
 
 

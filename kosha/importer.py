@@ -69,9 +69,12 @@ def import_file(db: Database, parser: BaseParser, path: Path, account_id: int) -
         )
         batch_id = cur.lastrowid
 
+        # On a credit-card statement every line is a card transaction; bank
+        # narrations carry their own UPI/NEFT/etc. prefixes to classify.
+        card_account = parser.account_type == "credit_card"
         for raw in parser.parse(path):
             parsed += 1
-            txn_type = features.derive_txn_type(raw.raw_description)
+            txn_type = features.CARD if card_account else features.derive_txn_type(raw.raw_description)
             keyword = features.derive_merchant_keyword(raw.raw_description, txn_type)
             dhash = features.dedup_hash(
                 raw.txn_date, raw.amount, raw.direction, raw.raw_description, account_id
