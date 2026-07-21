@@ -123,8 +123,8 @@ def test_chart_builders_produce_traces(db):
     stacked = charts.spend_stacked_bar(analytics.spend_by_period_subcategory(db, flt), "month")
     assert len(stacked.data) >= 2                    # one trace per sub-category
     line = charts.income_expense_line(analytics.income_expense_savings(db, flt))
-    assert any(t.type == "scatter" for t in line.data)   # savings-rate line
     assert sum(1 for t in line.data if t.type == "bar") == 3   # income/expense/savings
+    assert not any(t.type == "scatter" for t in line.data)     # savings-rate line removed
     pie = charts.category_pie(analytics.subcategory_totals(db, flt, "Expense"))
     assert pie.data[0].type == "pie"
 

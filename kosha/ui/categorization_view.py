@@ -13,13 +13,14 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QCompleter, QFormLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import categorization as cat
 from ..db import Database
 from ..format import format_inr
+from .uihelp import fit_columns as _fit_columns
 
 
 class CategorizationView(QWidget):
@@ -37,10 +38,13 @@ class CategorizationView(QWidget):
 
     def _build(self) -> None:
         root = QHBoxLayout(self)
+        # Left | right sit in a splitter, and the review/drill-in split too, so
+        # every block border can be dragged left/right and up/down.
+        outer = QSplitter(Qt.Horizontal)
 
-        left = QVBoxLayout()
-        left.addWidget(QLabel("<b>Keywords to review</b> (no sub-category yet — highest amount first)"))
-        left.addLayout(self._build_filter_bar())
+        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0, 0, 0, 0)
+        left_l.addWidget(QLabel("<b>Keywords to review</b> (no sub-category yet — highest amount first)"))
+        left_l.addLayout(self._build_filter_bar())
 
         split = QSplitter(Qt.Vertical)
 
@@ -50,10 +54,7 @@ class CategorizationView(QWidget):
         self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)  # multi-select
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        hh = self._table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        for c in (1, 2, 3, 4):
-            hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        _fit_columns(self._table, stretch_col=0)
         self._table.itemSelectionChanged.connect(self._on_select)
         split.addWidget(self._table)
 
@@ -65,40 +66,50 @@ class CategorizationView(QWidget):
         self._detail.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Dir", "Source"])
         self._detail.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._detail.verticalHeader().setVisible(False)
-        self._detail.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        _fit_columns(self._detail, stretch_col=1)
         dl.addWidget(self._detail)
         split.addWidget(detail)
         split.setSizes([340, 240])
 
-        left.addWidget(split, stretch=1)
-        left.addWidget(self._build_assign_box())
-        root.addLayout(left, stretch=3)
+        left_l.addWidget(split, stretch=1)
+        left_l.addWidget(self._build_assign_box())
+        outer.addWidget(left)
 
         # Right: data coverage + live category / sub-category totals.
-        right = QVBoxLayout()
+        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0, 0, 0, 0)
         self._data_summary = QLabel("—")
         self._data_summary.setWordWrap(True)
-        right.addWidget(self._data_summary)
+        right_l.addWidget(self._data_summary)
 
-        right.addWidget(QLabel("<b>Category totals</b>"))
+        right_split = QSplitter(Qt.Vertical)
+        cat_box = QWidget(); cbl = QVBoxLayout(cat_box); cbl.setContentsMargins(0, 0, 0, 0)
+        cbl.addWidget(QLabel("<b>Category totals</b>"))
         self._totals = QTableWidget(0, 3)
         self._totals.setHorizontalHeaderLabels(["Category", "Total", "Txns"])
         self._totals.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._totals.verticalHeader().setVisible(False)
-        self._totals.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        right.addWidget(self._totals, stretch=1)
+        _fit_columns(self._totals, stretch_col=0)
+        cbl.addWidget(self._totals)
+        right_split.addWidget(cat_box)
 
-        right.addWidget(QLabel("<b>Sub-category totals</b>"))
+        sub_box = QWidget(); sbl = QVBoxLayout(sub_box); sbl.setContentsMargins(0, 0, 0, 0)
+        sbl.addWidget(QLabel("<b>Sub-category totals</b>"))
         self._sub_totals = QTableWidget(0, 4)
         self._sub_totals.setHorizontalHeaderLabels(["Category", "Sub-category", "Total", "Txns"])
         self._sub_totals.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._sub_totals.verticalHeader().setVisible(False)
-        self._sub_totals.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        right.addWidget(self._sub_totals, stretch=1)
+        _fit_columns(self._sub_totals, stretch_col=1)
+        sbl.addWidget(self._sub_totals)
+        right_split.addWidget(sub_box)
+        right_l.addWidget(right_split, stretch=1)
 
         refresh = QPushButton("Refresh"); refresh.clicked.connect(self.refresh)
-        right.addWidget(refresh)
-        root.addLayout(right, stretch=1)
+        right_l.addWidget(refresh)
+
+        outer.addWidget(right)
+        outer.setStretchFactor(0, 3)
+        outer.setStretchFactor(1, 1)
+        root.addWidget(outer)
 
     def _build_filter_bar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
@@ -143,10 +154,16 @@ class CategorizationView(QWidget):
         self._exclude = QCheckBox("Exclude from all visuals and the table")
         form.addRow("", self._exclude)
 
+        btns = QHBoxLayout()
         self._assign_btn = QPushButton("Assign")
         self._assign_btn.clicked.connect(self._on_assign)
         self._assign_btn.setEnabled(False)
-        form.addRow(self._assign_btn)
+        self._ignore_btn = QPushButton("Delete / Ignore")
+        self._ignore_btn.setToolTip("Hide the selected keyword(s) from all visuals and tables")
+        self._ignore_btn.clicked.connect(self._on_ignore)
+        self._ignore_btn.setEnabled(False)
+        btns.addWidget(self._assign_btn); btns.addWidget(self._ignore_btn)
+        form.addRow(btns)
         return box
 
     # --- data flow -----------------------------------------------------------
@@ -159,6 +176,10 @@ class CategorizationView(QWidget):
         self._sub_category.completer().setModel(
             _string_model(cat.distinct_sub_categories(self._db))
         )
+        # Re-sync the drill-in with whatever row is now selected: after an assign
+        # the list reloads and the selected row index stays put (now a different
+        # keyword), but itemSelectionChanged doesn't re-fire, so do it explicitly.
+        self._on_select()
         self.changed.emit()
 
     def _load_keywords(self) -> None:
@@ -226,6 +247,7 @@ class CategorizationView(QWidget):
     def _on_select(self) -> None:
         sel = self.selected_rows()
         self._assign_btn.setEnabled(bool(sel))
+        self._ignore_btn.setEnabled(bool(sel))
         if not sel:
             self._selected_label.setText("—")
             self._assign_btn.setText("Assign")
@@ -284,6 +306,19 @@ class CategorizationView(QWidget):
             cat.add_rule(self._db, ks.keyword, category, sub or None, priority, excluded, ks.direction)
         self._sub_category.clear()
         self._exclude.setChecked(False)
+        self.refresh()
+
+    def _on_ignore(self) -> None:
+        """Delete/ignore the selected keyword slice(s): hide them everywhere.
+
+        The transactions keep their keyword (so nothing is orphaned) but are
+        excluded from all visuals and tables, and drop off the review list.
+        """
+        sel = self.selected_rows()
+        if not sel:
+            return
+        for ks in sel:
+            cat.set_excluded_keywords(self._db, [ks.keyword], True, direction=ks.direction)
         self.refresh()
 
 

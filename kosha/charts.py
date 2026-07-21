@@ -99,29 +99,22 @@ def spend_stacked_bar(rows, granularity: str = "month", template: str = "plotly_
 
 
 def income_expense_line(rows, template: str = "plotly_white") -> go.Figure:
-    """Income / Expense / Savings bars with savings-rate on a secondary axis."""
+    """Grouped Income / Expense / Savings bars per period."""
     labels = [prettify_period(r[0]) for r in rows]
     income = [r[1] for r in rows]
     expense = [r[2] for r in rows]
     savings = [r[3] for r in rows]
-    rate = [r[4] for r in rows]
 
     fig = go.Figure()
     fig.add_bar(name="Income", x=labels, y=income, marker_color="#54A24B", **_inr_hover(income, "Income"))
     fig.add_bar(name="Expense", x=labels, y=expense, marker_color="#E45756", **_inr_hover(expense, "Expense"))
     fig.add_bar(name="Savings / Investments", x=labels, y=savings, marker_color="#4C78A8",
                 **_inr_hover(savings, "Savings / Investments"))
-    fig.add_scatter(
-        name="Savings rate %", x=labels, y=rate, yaxis="y2",
-        mode="lines+markers", line=dict(color="#EECA3B", width=2),
-        hovertemplate="%{x}<br>%{y:.1f}%<extra>Savings rate</extra>",
-    )
     fig.update_layout(**_layout(
         "Income vs expense vs savings", template,
         barmode="group",
         xaxis=dict(categoryorder="array", categoryarray=labels),
         yaxis=dict(title="Amount (₹)"),
-        yaxis2=dict(title="Savings %", overlaying="y", side="right", showgrid=False),
     ))
     return _frame(fig)
 

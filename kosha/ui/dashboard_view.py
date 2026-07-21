@@ -15,13 +15,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDateEdit, QHBoxLayout, QLabel, QPushButton,
-    QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDateEdit, QHBoxLayout, QHeaderView, QLabel,
+    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import analytics, categorization, charts
 from ..db import Database
 from ..format import format_inr
+from .uihelp import fit_columns as _fit_columns
 
 
 class DashboardView(QWidget):
@@ -40,8 +41,8 @@ class DashboardView(QWidget):
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.addLayout(self._build_filter_bar())
-        root.addWidget(self._build_stats())
 
+        # Every block sits in a splitter so its borders can be dragged.
         splitter = QSplitter(Qt.Vertical)
 
         self._web = self._make_web_view()
@@ -53,22 +54,31 @@ class DashboardView(QWidget):
         )
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setStretchLastSection(True)
-        splitter.addWidget(self._table)
-        splitter.setSizes([420, 220])
+        _fit_columns(self._table, stretch_col=1)     # Description flexes; rest fit content
+
+        # Bottom row: transactions (left, stretch) + compact monthly stats (right).
+        bottom = QSplitter(Qt.Horizontal)
+        bottom.addWidget(self._table)
+        bottom.addWidget(self._build_stats())
+        bottom.setStretchFactor(0, 4)
+        bottom.setStretchFactor(1, 1)
+        splitter.addWidget(bottom)
+        splitter.setSizes([440, 240])
 
         root.addWidget(splitter, stretch=1)
 
-    def _build_stats(self) -> QTableWidget:
+    def _build_stats(self) -> QWidget:
         """Compact per-month average/min/max/total for Income/Expense/Savings."""
+        box = QWidget(); lay = QVBoxLayout(box); lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(QLabel("<b>Monthly stats</b>"))
         t = QTableWidget(3, 5)
-        t.setHorizontalHeaderLabels(["Per month", "Average", "Min", "Max", "Total"])
+        t.setHorizontalHeaderLabels(["", "Average", "Min", "Max", "Total"])
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
         t.verticalHeader().setVisible(False)
-        t.horizontalHeader().setStretchLastSection(True)
-        t.setFixedHeight(118)          # header + 3 compact rows; no scrollbar
+        _fit_columns(t, stretch_col=0)
         self._stats = t
-        return t
+        lay.addWidget(t)
+        return box
 
     def _make_web_view(self):
         try:
@@ -115,11 +125,11 @@ class DashboardView(QWidget):
     # --- filter state --------------------------------------------------------
 
     def reset_filter_bounds(self) -> None:
-        lo, hi = analytics.date_bounds(self._db)
-        lo = lo or date.today()
-        hi = hi or date.today()
-        self._start.setDate(QDate(lo.year, lo.month, lo.day))
-        self._end.setDate(QDate(hi.year, hi.month, hi.day))
+        # Default view: the last 6 months up to today (To defaults to today's date).
+        end = date.today()
+        start = _months_back(end, 6)
+        self._start.setDate(QDate(start.year, start.month, start.day))
+        self._end.setDate(QDate(end.year, end.month, end.day))
         self._reload_categories()
         self._reload_sources()
 
@@ -254,3 +264,14 @@ class DashboardView(QWidget):
                 if c == 2:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self._table.setItem(r, c, item)
+
+
+def _months_back(d: date, months: int) -> date:
+    """The date ``months`` calendar months before ``d`` (clamped day-of-month)."""
+    total = (d.year * 12 + (d.month - 1)) - months
+    year, month = divmod(total, 12)
+    month += 1
+    # Clamp the day so e.g. 31 Aug - 6 months lands on a valid February day.
+    day = min(d.day, [31, 29 if year % 4 == 0 and (year % 100 or not year % 400) else 28,
+                      31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+    return date(year, month, day)

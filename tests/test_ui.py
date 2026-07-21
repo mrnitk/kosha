@@ -223,6 +223,28 @@ def test_dashboard_has_source_and_subcategory_columns(tmp_path):
     db.lock()
 
 
+def test_dashboard_defaults_to_last_six_months(tmp_path):
+    from datetime import date
+    from kosha.ui.dashboard_view import DashboardView, _months_back
+    db = _make_db(tmp_path)
+    dash = DashboardView(db)
+    flt = dash.current_filter()
+    assert flt.end == date.today()
+    assert flt.start == _months_back(date.today(), 6)
+    db.lock()
+
+
+def test_ignore_button_excludes_keyword(tmp_path):
+    db = _make_db(tmp_path)
+    view = CategorizationView(db)
+    target = next(i for i, ks in enumerate(view._keywords) if ks.keyword == "SWIGGY LIMITED")
+    view._table.selectRow(target)
+    view._on_ignore()
+    from kosha import categorization as cat
+    assert "SWIGGY LIMITED" not in {k.keyword for k in cat.unreviewed_keywords(db)}
+    db.lock()
+
+
 def test_main_window_has_clear_action(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)

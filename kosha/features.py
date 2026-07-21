@@ -79,12 +79,20 @@ def normalize_keyword(text: str) -> str:
 _normalize = normalize_keyword
 
 
-def derive_merchant_keyword(narration: str, txn_type: str) -> str | None:
-    """Extract a normalized merchant/payee keyword, or None if nothing usable."""
+def derive_merchant_keyword(narration: str, txn_type: str) -> str:
+    """Extract a normalized merchant/payee keyword.
+
+    Always returns a non-empty keyword so every transaction is groupable — the
+    descriptive part of the narration where possible, else a sensible fallback
+    (first real word, or the transaction type). Trailing transaction-specific
+    reference/account tokens (e.g. ``DP0160 92120635RK8ND (REF# ST26…)``) are
+    dropped so recurring payees like ``BBPY CC PAYMENT`` collapse to one keyword
+    instead of a unique keyword per transaction.
+    """
     # CARD / ATM narrations are space-delimited (e.g. "POS <card#> AMAZON"),
     # not hyphen-delimited like the transfer types.
     if txn_type in (CARD, ATM) and "-" not in narration:
-        return _keyword_from_tokens(narration)
+        return _keyword_from_tokens(narration) or _fallback_keyword(narration, txn_type)
 
     parts = [p.strip() for p in narration.split("-")]
     idx = _MERCHANT_SEGMENT.get(txn_type, 1)
@@ -105,7 +113,8 @@ def derive_merchant_keyword(narration: str, txn_type: str) -> str | None:
     if not candidate:
         candidate = _keyword_from_tokens(narration) or ""
 
-    return candidate or None
+    candidate = _trim_ref_tail(candidate)
+    return candidate or _fallback_keyword(narration, txn_type)
 
 
 # Noise tokens common in card descriptions that aren't part of the merchant.
@@ -116,7 +125,10 @@ def _keyword_from_tokens(narration: str) -> str | None:
     """Merchant name from a space-delimited narration, dropping prefixes/refs.
 
     Handles card descriptions too: payment-gateway prefixes like ``PYU*Swiggy``
-    or ``RAZ*Tijori`` are stripped to the merchant after the ``*``.
+    or ``RAZ*Tijori`` are stripped to the merchant after the ``*``. Collection
+    stops at the first reference-like token *once a name has started*, so a
+    trailing ref tail is dropped while a leading card-number (``POS <num> NAME``)
+    is skipped over.
     """
     skip_prefixes = _ATM_PREFIXES + _CARD_PREFIXES
     kept: list[str] = []
@@ -125,10 +137,48 @@ def _keyword_from_tokens(narration: str) -> str | None:
             tok = tok.split("*", 1)[1]
         if not tok or tok in skip_prefixes or tok in _TOKEN_NOISE:
             continue
-        if _looks_like_ref(tok) or "XXXX" in tok:
-            continue
+        if _is_ref_token(tok) or "XXXX" in tok:
+            if kept:
+                break                        # ref after the name → tail, stop
+            continue                         # ref before the name → skip it
         kept.append(tok)
     return " ".join(kept) or None
+
+
+def _trim_ref_tail(text: str) -> str:
+    """Drop a trailing run of reference/account tokens from an extracted name."""
+    kept: list[str] = []
+    for tok in text.split():
+        if _is_ref_token(tok) or "XXXX" in tok:
+            if kept:
+                break
+            continue
+        kept.append(tok)
+    return " ".join(kept)
+
+
+def _fallback_keyword(narration: str, txn_type: str) -> str:
+    """Guaranteed non-empty keyword: first real word, else the txn type."""
+    for tok in _normalize(narration).split():
+        if "*" in tok:
+            tok = tok.split("*", 1)[1]
+        if tok.isalpha() and len(tok) >= 2 and tok not in _TOKEN_NOISE:
+            return tok
+    return txn_type or "MISC"
+
+
+def _is_ref_token(tok: str) -> bool:
+    """True for a transaction-specific reference/account/id token (not a name)."""
+    if _looks_like_ref(tok):                    # @, IFSC, long pure-numeric
+        return True
+    if "#" in tok:                              # '(REF#...' etc.
+        return True
+    has_digit = any(c.isdigit() for c in tok)
+    if has_digit and any(c.isalpha() for c in tok) and len(tok) >= 5:
+        return True                             # coded alphanumeric, e.g. DP0160
+    if tok.isdigit() and len(tok) >= 4:         # account/ref number (keep short years)
+        return True
+    return False
 
 
 def _looks_like_ref(segment: str) -> bool:

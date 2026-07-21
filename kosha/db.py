@@ -18,9 +18,9 @@ from typing import Optional
 
 import sqlcipher3
 
-from . import config, crypto
+from . import config, crypto, features
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class WrongPasswordError(Exception):
@@ -170,6 +170,8 @@ class Database:
                 self._migrate_to_v5(con)
             # v6 is a view-only change (account 'source' columns); re-applying the
             # schema below recreates the view, so no dedicated migration is needed.
+            if current < 7:
+                self._migrate_to_v7(con)
             con.executescript(_load_schema_sql())
             if current < 3:
                 self._migrate_to_v3(con)
@@ -198,6 +200,27 @@ class Database:
         """
         if not _has_column(con, "category_rules", "direction"):
             con.execute("ALTER TABLE category_rules ADD COLUMN direction TEXT")
+
+    @staticmethod
+    def _migrate_to_v7(con: sqlcipher3.Connection) -> None:
+        """Recompute merchant_keyword for existing rows with improved extraction.
+
+        The keyword heuristic now strips trailing reference/account tokens (so
+        recurring payees collapse to one keyword) and always yields a non-empty
+        keyword. Re-deriving fixes history imported under the old logic. A rule
+        keyed on a now-changed keyword simply stops matching — rare, since the
+        noisy keywords this fixes were almost never given rules; fix any straggler
+        in the Rules tab.
+        """
+        rows = con.execute(
+            "SELECT id, raw_description, txn_type FROM transactions"
+        ).fetchall()
+        for tid, raw, ttype in rows:
+            txn_type = ttype or features.derive_txn_type(raw)
+            keyword = features.derive_merchant_keyword(raw, txn_type)
+            con.execute(
+                "UPDATE transactions SET merchant_keyword=? WHERE id=?", (keyword, tid)
+            )
 
     @staticmethod
     def _migrate_to_v3(con: sqlcipher3.Connection) -> None:
