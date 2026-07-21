@@ -42,6 +42,12 @@ def _selftest() -> int:
     from PySide6.QtWebEngineWidgets import QWebEngineView
     QWebEngineView()
 
+    # 4) openpyxl (.xlsx) for the template importer — round-trip a blank template.
+    from kosha import template_import
+    tmpl = os.path.join(workdir, "t.xlsx")
+    template_import.write_template(tmpl)
+    assert template_import.read_template(tmpl) == [], "openpyxl/template not bundled"
+
     print("SELFTEST OK")
     return 0
 

@@ -21,10 +21,13 @@ hiddenimports = [
     "PySide6.QtWebEngineCore",
     "PySide6.QtPrintSupport",
     "PySide6.QtSvg",
+    "et_xmlfile",            # openpyxl dependency, imported indirectly
 ]
 
 # Collect data/binaries/submodules for packages PyInstaller can't fully trace.
-for pkg in ("plotly", "sqlcipher3", "argon2"):
+# openpyxl/xlrd back the template importer (.xlsx/.xls) and are imported lazily,
+# so PyInstaller's static scan can miss them without an explicit collect.
+for pkg in ("plotly", "sqlcipher3", "argon2", "openpyxl", "xlrd"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries

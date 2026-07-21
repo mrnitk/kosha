@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..db import Database, WrongPasswordError
+from . import theme
 
 MIN_PASSWORD_LEN = 8
 
@@ -25,6 +26,10 @@ class UnlockDialog(QDialog):
         self.setWindowTitle("Kosha — Create Vault" if self._creating else "Kosha — Unlock")
         self.setMinimumWidth(360)
         self._build()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        theme.force_light_titlebar(self)   # keep the title bar light under OS dark mode
 
     def _build(self) -> None:
         layout = QVBoxLayout(self)

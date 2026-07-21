@@ -1,13 +1,12 @@
-"""Main application window: dashboard + categorization, import, and theming."""
+"""Main application window: dashboard + categorization + rules, and import."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QMainWindow, QMessageBox, QTabWidget,
+    QFileDialog, QMainWindow, QMessageBox, QTabWidget,
 )
 
 from .. import importer
@@ -26,7 +25,6 @@ class MainWindow(QMainWindow):
     def __init__(self, db: Database):
         super().__init__()
         self._db = db
-        self._settings = QSettings("Kosha", "Kosha")
         self.setWindowTitle("Kosha — Expense Tracker")
         self.resize(1040, 660)
         self.setAcceptDrops(True)          # drag-and-drop statement import
@@ -49,8 +47,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._tabs)
 
         self._build_menu()
-        self._apply_saved_theme()
         self._update_status()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        theme.force_light_titlebar(self)   # keep the title bar light under OS dark mode
 
     # --- menus ---------------------------------------------------------------
 
@@ -62,6 +63,14 @@ class MainWindow(QMainWindow):
         import_action.triggered.connect(self._import_dialog)
         file_menu.addAction(import_action)
 
+        template_import_action = QAction("Import from &template…", self)
+        template_import_action.triggered.connect(self._import_template)
+        file_menu.addAction(template_import_action)
+
+        template_dl_action = QAction("Download blank &template…", self)
+        template_dl_action.triggered.connect(self._download_template)
+        file_menu.addAction(template_dl_action)
+
         clear_action = QAction("&Clear all data…", self)
         clear_action.triggered.connect(self._clear_data_dialog)
         file_menu.addAction(clear_action)
@@ -72,40 +81,58 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        view_menu = self.menuBar().addMenu("&View")
-        theme_menu = view_menu.addMenu("&Theme")
-        self._theme_group = QActionGroup(self)
-        self._theme_group.setExclusive(True)
-        for mode in theme.MODES:
-            act = QAction(mode.capitalize(), self, checkable=True)
-            act.setData(mode)
-            act.triggered.connect(lambda _checked, m=mode: self._set_theme(m))
-            self._theme_group.addAction(act)
-            theme_menu.addAction(act)
-
-    # --- theming -------------------------------------------------------------
-
-    def _apply_saved_theme(self) -> None:
-        mode = self._settings.value("theme", "system")
-        if mode not in theme.MODES:
-            mode = "system"
-        for act in self._theme_group.actions():
-            act.setChecked(act.data() == mode)
-        self._set_theme(mode, persist=False)
-
-    def _set_theme(self, mode: str, persist: bool = True) -> None:
-        app = QApplication.instance()
-        dark = theme.apply_theme(app, mode)
-        self._dashboard.set_dark(dark)
-        if persist:
-            self._settings.setValue("theme", mode)
-
     # --- import --------------------------------------------------------------
 
     def _import_dialog(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Select statements", "", _IMPORT_FILTER)
         if paths:
             self._import_paths(paths)
+
+    def _import_template(self) -> None:
+        """Import a filled standard template (any bank; Source column per row)."""
+        from .. import template_import
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select a filled template", "",
+            "Template (*.xlsx *.xls *.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            result = importer.import_template(self._db, Path(path))
+        except template_import.TemplateError as exc:
+            QMessageBox.warning(self, "Not a valid template", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        self._refresh_after_import()
+        QMessageBox.information(self, "Import complete", result.summary())
+
+    def _download_template(self) -> None:
+        """Save a blank standard template for the user to fill in."""
+        from .. import template_import
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save blank template", "Kosha_import_template.xlsx",
+            "Excel workbook (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            template_import.write_template(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not save template", str(exc))
+            return
+        QMessageBox.information(
+            self, "Template saved",
+            f"Saved to:\n{path}\n\nFill in the 'Transactions' sheet, then use "
+            "File ▸ Import from template.")
+
+    def _refresh_after_import(self) -> None:
+        self._view.refresh()
+        self._rules.refresh()
+        self._dashboard.reset_filter_bounds()
+        self._dashboard.refresh()
+        self._update_status()
 
     def _import_paths(self, paths: list[str]) -> None:
         try:

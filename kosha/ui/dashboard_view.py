@@ -31,7 +31,6 @@ class DashboardView(QWidget):
         self._db = db
         self._web = None
         self._html_file: Path | None = None
-        self._dark = False
         self._build()
         self.reset_filter_bounds()
         self.refresh()
@@ -200,19 +199,14 @@ class DashboardView(QWidget):
         """Build the dashboard's combined chart HTML for the current filter."""
         flt = self.current_filter()
         gran = self.granularity()
-        tmpl = "plotly_dark" if self._dark else "plotly_white"
+        tmpl = "plotly_white"          # app is light-only
         figs = [
             charts.income_expense_line(analytics.income_expense_savings(self._db, flt, gran), tmpl),
             charts.spend_stacked_bar(analytics.spend_by_period_subcategory(self._db, flt, gran), gran, tmpl),
             charts.category_pie(analytics.subcategory_totals(self._db, flt, "Expense"), "Expense share by sub-category", tmpl),
             charts.top_merchants_bar(analytics.top_merchants(self._db, flt), tmpl),
         ]
-        return charts.dashboard_html(figs, dark=self._dark)
-
-    def set_dark(self, dark: bool) -> None:
-        """Switch chart theme to match the app; re-render."""
-        self._dark = dark
-        self.refresh()
+        return charts.dashboard_html(figs, dark=False)
 
     def refresh(self) -> None:
         html = self.build_html()

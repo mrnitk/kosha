@@ -245,6 +245,17 @@ def test_ignore_button_excludes_keyword(tmp_path):
     db.lock()
 
 
+def test_main_window_has_template_actions(tmp_path):
+    db = _make_db(tmp_path)
+    win = MainWindow(db)
+    file_menu = next(m for m in win.menuBar().findChildren(type(win.menuBar().addMenu("x")))
+                     if "File" in m.title())
+    labels = [a.text() for a in file_menu.actions()]
+    assert any("Import from" in t and "template" in t.lower() for t in labels)
+    assert any("Download" in t and "template" in t.lower() for t in labels)
+    win.close()
+
+
 def test_main_window_has_clear_action(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)
@@ -255,15 +266,13 @@ def test_main_window_has_clear_action(tmp_path):
     win.close()
 
 
-def test_main_window_status_and_theme(tmp_path):
+def test_main_window_status_and_no_theme_menu(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)
     assert "4 transactions" in win.statusBar().currentMessage()
     menus = [m.title() for m in win.menuBar().findChildren(type(win.menuBar().addMenu("x")))]
     assert any("File" in t for t in menus)
-    assert any("View" in t for t in menus)
-    win._set_theme("dark")           # exercise the theme switch
-    win._set_theme("light")
+    assert not any("View" in t for t in menus)   # theme options removed; light-only
     win.close()                      # triggers db.lock via closeEvent
     assert not db.is_unlocked
 

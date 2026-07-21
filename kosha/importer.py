@@ -58,30 +58,25 @@ def get_or_create_account(db: Database, name: str, account_type: str, institutio
     return cur.lastrowid
 
 
-def import_file(db: Database, parser: BaseParser, path: Path, account_id: int) -> ImportResult:
-    """Parse ``path`` with ``parser`` and insert new transactions for ``account_id``."""
-    path = Path(path)
+def import_stream(db: Database, source_file: str, account_id: int, raws, *, force_card: bool) -> ImportResult:
+    """Insert a stream of ``RawTransaction`` for ``account_id`` (one batch, deduped).
+
+    Shared core for both the built-in parsers and the generic mapping importer.
+    On a credit-card source every line is a card transaction; otherwise the
+    narration's own UPI/NEFT/etc. prefix classifies it.
+    """
     con = db.connection
-
-    parsed = 0
-    inserted = 0
-    skipped = 0
-
-    # The sqlcipher3 DB-API driver opens transactions implicitly; we commit or
-    # roll back the whole file as one unit.
+    parsed = inserted = skipped = 0
     try:
         cur = con.execute(
             "INSERT INTO import_batches(source_file, account_id, row_count) VALUES (?,?,0)",
-            (path.name, account_id),
+            (source_file, account_id),
         )
         batch_id = cur.lastrowid
 
-        # On a credit-card statement every line is a card transaction; bank
-        # narrations carry their own UPI/NEFT/etc. prefixes to classify.
-        card_account = parser.account_type == "credit_card"
-        for raw in parser.parse(path):
+        for raw in raws:
             parsed += 1
-            txn_type = features.CARD if card_account else features.derive_txn_type(raw.raw_description)
+            txn_type = features.CARD if force_card else features.derive_txn_type(raw.raw_description)
             keyword = features.derive_merchant_keyword(raw.raw_description, txn_type)
             dhash = features.dedup_hash(
                 raw.txn_date, raw.amount, raw.direction, raw.raw_description, account_id
@@ -108,12 +103,72 @@ def import_file(db: Database, parser: BaseParser, path: Path, account_id: int) -
         raise
 
     return ImportResult(
-        account_id=account_id,
-        batch_id=batch_id,
-        parsed=parsed,
-        inserted=inserted,
-        skipped_duplicates=skipped,
+        account_id=account_id, batch_id=batch_id,
+        parsed=parsed, inserted=inserted, skipped_duplicates=skipped,
     )
+
+
+def import_file(db: Database, parser: BaseParser, path: Path, account_id: int) -> ImportResult:
+    """Parse ``path`` with ``parser`` and insert new transactions for ``account_id``."""
+    path = Path(path)
+    return import_stream(
+        db, path.name, account_id, parser.parse(path),
+        force_card=(parser.account_type == "credit_card"),
+    )
+
+
+@dataclass
+class TemplateResult:
+    """Aggregate outcome of a standard-template import (possibly many sources)."""
+
+    per_source: list[tuple[str, ImportResult]]
+
+    @property
+    def total_parsed(self) -> int:
+        return sum(r.parsed for _s, r in self.per_source)
+
+    @property
+    def total_inserted(self) -> int:
+        return sum(r.inserted for _s, r in self.per_source)
+
+    @property
+    def total_skipped(self) -> int:
+        return sum(r.skipped_duplicates for _s, r in self.per_source)
+
+    def summary(self) -> str:
+        if not self.per_source:
+            return "No transactions found in the template."
+        lines = [
+            f"Imported {self.total_inserted} new transaction(s), "
+            f"{self.total_skipped} duplicate(s) skipped."
+        ]
+        if len(self.per_source) > 1:
+            for source, r in self.per_source:
+                lines.append(f"  • {source}: {r.inserted} new, {r.skipped_duplicates} skipped")
+        return "\n".join(lines)
+
+
+def import_template(db: Database, path) -> TemplateResult:
+    """Import a filled standard template (any bank), one account per Source value."""
+    from collections import OrderedDict
+
+    from . import template_import
+    path = Path(path)
+    records = template_import.read_template(path)
+
+    groups: "OrderedDict[tuple[str, str], list]" = OrderedDict()
+    for raw, source, account_type in records:
+        groups.setdefault((source, account_type), []).append(raw)
+
+    results: list[tuple[str, ImportResult]] = []
+    for (source, account_type), raws in groups.items():
+        account_id = get_or_create_account(db, source, account_type, "template")
+        res = import_stream(
+            db, path.name, account_id, raws,
+            force_card=(account_type == "credit_card"),
+        )
+        results.append((source, res))
+    return TemplateResult(per_source=results)
 
 
 def detect_parser(path) -> BaseParser | None:
