@@ -11,12 +11,13 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import categorization as cat
 from ..db import Database
+from .uihelp import autosize as _autosize, fit_columns as _fit_columns
 
 _DIRECTIONS = [("Both", None), ("Debit", "debit"), ("Credit", "credit")]
 
@@ -56,10 +57,7 @@ class RulesView(QWidget):
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        hh = self._table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        for c in (1, 2, 3, 4, 5):
-            hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        _fit_columns(self._table, stretch_col=0)
         self._table.itemSelectionChanged.connect(self._on_select)
         left.addWidget(self._table, stretch=1)
         root.addLayout(left, stretch=3)
@@ -118,6 +116,7 @@ class RulesView(QWidget):
             self._table.setItem(row, 3, QTableWidgetItem(r.sub_category or ""))
             self._table.setItem(row, 4, _centered("yes" if r.excluded else ""))
             self._table.setItem(row, 5, _centered(str(r.priority)))
+        _autosize(self._table)
         self._set_editor_enabled(False)
 
     def _current_rule(self):

@@ -9,6 +9,8 @@ every chart.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import plotly.graph_objects as go
 import plotly.io as pio
 
@@ -153,17 +155,34 @@ def figure_to_html(fig: go.Figure) -> str:
     return pio.to_html(fig, include_plotlyjs="inline", full_html=True, config={"responsive": True})
 
 
-def dashboard_html(figures, dark: bool = False) -> str:
+def write_plotlyjs(directory) -> str:
+    """Write plotly.min.js into ``directory`` once; return its filename.
+
+    Referencing the library from a cached local file makes each dashboard
+    refresh generate a tiny HTML page (~tens of KB) instead of re-inlining the
+    ~3.5 MB library every time, which is what made refreshes slow.
+    """
+    from plotly.offline import get_plotlyjs
+    p = Path(directory) / "plotly.min.js"
+    if not p.exists():
+        p.write_text(get_plotlyjs(), encoding="utf-8")
+    return p.name
+
+
+def dashboard_html(figures, dark: bool = False, plotlyjs: str = "inline") -> str:
     """Combine multiple figures into one scrollable, responsive page.
 
-    Plotly.js is inlined once; subsequent figures reference the loaded library.
-    ``dark`` matches the page chrome to the app's theme.
+    ``plotlyjs`` controls how the library is loaded: ``"inline"`` embeds it (self
+    contained, used by tests); a filename/URL references it from there instead —
+    far cheaper to regenerate. ``dark`` matches the page chrome to the app theme.
     """
+    external = plotlyjs != "inline"
     blocks = []
     for i, fig in enumerate(figures):
+        include = False if external else ("inline" if i == 0 else False)
         blocks.append(pio.to_html(
             fig,
-            include_plotlyjs=("inline" if i == 0 else False),
+            include_plotlyjs=include,
             full_html=False,
             config={"responsive": True},
             default_height="360px",
@@ -173,7 +192,8 @@ def dashboard_html(figures, dark: bool = False) -> str:
     fg = "#e0e0e0" if dark else "#202020"
     border = "#3a3a3a" if dark else "#d0d0d0"
     card = "#252525" if dark else "#fafafa"
-    return f"""<!doctype html><html><head><meta charset="utf-8">
+    head_js = f'<script src="{plotlyjs}" charset="utf-8"></script>' if external else ""
+    return f"""<!doctype html><html><head><meta charset="utf-8">{head_js}
 <style>
   body {{ margin:0; padding:8px; font-family: system-ui, sans-serif;
           background:{bg}; color:{fg}; }}

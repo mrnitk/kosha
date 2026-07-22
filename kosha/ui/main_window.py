@@ -32,11 +32,13 @@ class MainWindow(QMainWindow):
         self._dashboard = DashboardView(db)
         self._view = CategorizationView(db)
         self._rules = RulesView(db)
+        # Rebuilding the dashboard's Plotly page is ~1s, so cross-tab edits only
+        # flag it dirty; it re-renders when the user actually opens it (below).
         self._view.changed.connect(self._update_status)
-        self._view.changed.connect(self._dashboard.refresh)
+        self._view.changed.connect(self._dashboard.mark_dirty)
         self._view.changed.connect(self._rules.refresh)
         # Editing a rule re-resolves history, so refresh the other views.
-        self._rules.changed.connect(self._dashboard.refresh)
+        self._rules.changed.connect(self._dashboard.mark_dirty)
         self._rules.changed.connect(self._view.refresh)
         self._rules.changed.connect(self._update_status)
 
@@ -44,6 +46,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._view, "Categorize")
         self._tabs.addTab(self._rules, "Rules")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self._tabs)
 
         self._build_menu()
@@ -52,6 +55,11 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         theme.force_light_titlebar(self)   # keep the title bar light under OS dark mode
+
+    def _on_tab_changed(self, _index: int) -> None:
+        # Only pay for the dashboard rebuild when it's brought to the front.
+        if self._tabs.currentWidget() is self._dashboard:
+            self._dashboard.refresh_if_dirty()
 
     # --- menus ---------------------------------------------------------------
 

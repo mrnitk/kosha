@@ -135,6 +135,17 @@ def test_color_map_is_stable():
     assert a == b                                  # order-independent
 
 
+def test_dashboard_html_external_plotlyjs_is_small(tmp_path, db):
+    flt = analytics.Filter()
+    figs = [charts.category_pie(analytics.subcategory_totals(db, flt, "Expense")),
+            charts.top_merchants_bar(analytics.top_merchants(db, flt))]
+    name = charts.write_plotlyjs(tmp_path)
+    assert (tmp_path / name).exists()
+    html = charts.dashboard_html(figs, plotlyjs=name)
+    assert f'src="{name}"' in html                 # references the cached library
+    assert len(html) < 200_000                     # not the ~4.9 MB inline page
+
+
 def test_dashboard_html_inlines_plotly_once(db):
     flt = analytics.Filter()
     figs = [

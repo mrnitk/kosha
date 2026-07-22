@@ -245,6 +245,62 @@ def test_ignore_button_excludes_keyword(tmp_path):
     db.lock()
 
 
+def test_fit_columns_avoids_resizetocontents(tmp_path):
+    # ResizeToContents on a visible table re-measures every column on each
+    # setItem (O(n^2)) and froze the app; fit_columns must use Interactive.
+    from PySide6.QtWidgets import QHeaderView, QTableWidget
+    from kosha.ui.uihelp import fit_columns
+    t = QTableWidget(0, 4)
+    fit_columns(t, stretch_col=1)
+    hh = t.horizontalHeader()
+    assert hh.sectionResizeMode(1) == QHeaderView.Stretch
+    for c in (0, 2, 3):
+        assert hh.sectionResizeMode(c) == QHeaderView.Interactive
+
+
+def test_rules_view_handles_many_rules_fast(tmp_path):
+    # Regression for the 27s hang: populating a large rules table must be quick.
+    import time
+    from kosha.ui.rules_view import RulesView
+    db = _make_db(tmp_path)
+    for i in range(300):
+        cat.add_rule(db, f"MERCHANT{i}", "Expense", "Misc")
+    view = RulesView(db)
+    start = time.perf_counter()
+    view.refresh()
+    elapsed = time.perf_counter() - start
+    assert view._table.rowCount() == 300
+    assert elapsed < 5.0, f"rules refresh too slow: {elapsed:.1f}s"
+    db.lock()
+
+
+def test_dashboard_lazy_refresh(tmp_path):
+    from kosha.ui.dashboard_view import DashboardView
+    db = _make_db(tmp_path)
+    dash = DashboardView(db)
+    assert dash._dirty is False
+    dash.mark_dirty()
+    assert dash._dirty is True
+    dash.refresh_if_dirty()
+    assert dash._dirty is False          # rebuilt, flag cleared
+    db.lock()
+
+
+def test_categorize_marks_dashboard_dirty_not_rebuilt(tmp_path):
+    db = _make_db(tmp_path)
+    win = MainWindow(db)
+    win._tabs.setCurrentWidget(win._view)   # leave the dashboard tab
+    win._dashboard.refresh()                # start clean
+    assert win._dashboard._dirty is False
+    # Assigning on the Categorize tab should only flag the dashboard, not rebuild.
+    win._view.assign("SWIGGY LIMITED", "Expense", "Food")
+    assert win._dashboard._dirty is True
+    # Returning to the dashboard tab clears it (rebuilds once).
+    win._tabs.setCurrentWidget(win._dashboard)
+    assert win._dashboard._dirty is False
+    win.close()
+
+
 def test_main_window_has_template_actions(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)

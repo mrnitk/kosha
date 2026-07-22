@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from .. import analytics, categorization, charts
 from ..db import Database
 from ..format import format_inr
-from .uihelp import fit_columns as _fit_columns
+from .uihelp import autosize as _autosize, fit_columns as _fit_columns
 
 
 class DashboardView(QWidget):
@@ -30,10 +30,39 @@ class DashboardView(QWidget):
         super().__init__(parent)
         self._db = db
         self._web = None
+        self._assets_dir: Path | None = None
         self._html_file: Path | None = None
+        self._plotlyjs: str = "inline"
+        self._dirty = False
         self._build()
+        self._setup_assets()          # cache plotly.js so the first build is cheap
         self.reset_filter_bounds()
         self.refresh()
+
+    def _setup_assets(self) -> None:
+        """Write plotly.min.js once so every build references it (small, fast)."""
+        if not hasattr(self._web, "setUrl"):
+            return                    # no web engine (e.g. tests) — never rendered
+        try:
+            self._assets_dir = Path(tempfile.mkdtemp(prefix="kosha_dashboard_"))
+            self._html_file = self._assets_dir / "dashboard.html"
+            self._plotlyjs = charts.write_plotlyjs(self._assets_dir)
+        except Exception:
+            self._plotlyjs = "inline"  # fall back to a self-contained page
+
+    # --- lazy refresh --------------------------------------------------------
+
+    def mark_dirty(self) -> None:
+        """Note that the data changed without paying to rebuild the charts now.
+
+        Rebuilding the Plotly page is ~1s, so we defer it until the dashboard is
+        actually shown (see ``refresh_if_dirty``) rather than doing it on every
+        categorize/rule edit made on another tab."""
+        self._dirty = True
+
+    def refresh_if_dirty(self) -> None:
+        if self._dirty:
+            self.refresh()
 
     # --- construction --------------------------------------------------------
 
@@ -206,11 +235,11 @@ class DashboardView(QWidget):
             charts.category_pie(analytics.subcategory_totals(self._db, flt, "Expense"), "Expense share by sub-category", tmpl),
             charts.top_merchants_bar(analytics.top_merchants(self._db, flt), tmpl),
         ]
-        return charts.dashboard_html(figs, dark=False)
+        return charts.dashboard_html(figs, dark=False, plotlyjs=self._plotlyjs)
 
     def refresh(self) -> None:
-        html = self.build_html()
-        self._render(html)
+        self._dirty = False
+        self._render(self.build_html())
         self._load_stats()
         self._load_table()
 
@@ -228,20 +257,16 @@ class DashboardView(QWidget):
                 item = QTableWidgetItem(format_inr(s[field]))
                 item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self._stats.setItem(r, c, item)
+        _autosize(self._stats)
 
     def _render(self, html: str) -> None:
-        """Load chart HTML into the web view.
+        """Write the chart page and load it by file URL.
 
-        QWebEngineView.setHtml() caps content at ~2 MB (it encodes to a data:
-        URL), and our inline-Plotly page is far larger, so we write it to a temp
-        file and load it by file URL instead — no size limit.
+        QWebEngineView.setHtml() caps content at ~2 MB (it data-URL encodes it),
+        so we write to a temp file beside the cached plotly.min.js and load that.
         """
-        if not hasattr(self._web, "setUrl"):
+        if not hasattr(self._web, "setUrl") or self._html_file is None:
             return
-        if self._html_file is None:
-            fd, path = tempfile.mkstemp(prefix="kosha_dashboard_", suffix=".html")
-            os.close(fd)
-            self._html_file = Path(path)
         self._html_file.write_text(html, encoding="utf-8")
         self._web.setUrl(QUrl.fromLocalFile(str(self._html_file)))
 
@@ -258,6 +283,7 @@ class DashboardView(QWidget):
                 if c == 2:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self._table.setItem(r, c, item)
+        _autosize(self._table)
 
 
 def _months_back(d: date, months: int) -> date:

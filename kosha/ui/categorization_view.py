@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from .. import categorization as cat
 from ..db import Database
 from ..format import format_inr
-from .uihelp import fit_columns as _fit_columns
+from .uihelp import autosize as _autosize, fit_columns as _fit_columns
 
 
 class CategorizationView(QWidget):
@@ -178,7 +178,7 @@ class CategorizationView(QWidget):
         )
         # Re-sync the drill-in with whatever row is now selected: after an assign
         # the list reloads and the selected row index stays put (now a different
-        # keyword), but itemSelectionChanged doesn't re-fire, so do it explicitly.
+        # keyword), but itemSelectionChanged doesn't re-fire.
         self._on_select()
         self.changed.emit()
 
@@ -203,6 +203,7 @@ class CategorizationView(QWidget):
             self._table.setItem(row, 2, n)
             self._table.setItem(row, 3, amt)
             self._table.setItem(row, 4, category)
+        _autosize(self._table)
 
     def _load_totals(self) -> None:
         totals = cat.category_totals(self._db)
@@ -213,6 +214,7 @@ class CategorizationView(QWidget):
             self._totals.setItem(row, 1, amt)
             ni = QTableWidgetItem(str(n)); ni.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._totals.setItem(row, 2, ni)
+        _autosize(self._totals)
 
     def _load_sub_totals(self) -> None:
         rows = cat.subcategory_totals(self._db)
@@ -224,6 +226,7 @@ class CategorizationView(QWidget):
             self._sub_totals.setItem(row, 2, amt)
             ni = QTableWidgetItem(str(n)); ni.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._sub_totals.setItem(row, 3, ni)
+        _autosize(self._sub_totals)
 
     def _load_data_summary(self) -> None:
         lo, hi, n = cat.data_summary(self._db)
@@ -281,6 +284,7 @@ class CategorizationView(QWidget):
             self._detail.setItem(r, 2, amt)
             self._detail.setItem(r, 3, QTableWidgetItem(txn_direction))
             self._detail.setItem(r, 4, QTableWidgetItem(source or ""))
+        _autosize(self._detail)
 
     def assign(self, keywords, category: str, sub_category: str = "",
                priority: int = 0, excluded: bool = False, direction: str | None = None) -> None:
