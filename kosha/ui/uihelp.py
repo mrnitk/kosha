@@ -25,9 +25,14 @@ def fit_columns(table: QTableWidget, stretch_col: int | None = None) -> None:
 
 
 def autosize(table: QTableWidget) -> None:
-    """Size Interactive columns to their contents in a single pass (O(rows·cols)).
+    """Size the content columns to their data in one pass (O(rows·cols)).
 
-    Call after filling a table. Safe to call on tables set up with
-    :func:`fit_columns`; the stretch column keeps stretching.
+    Call after filling a table. The stretch column is deliberately skipped —
+    resizing it fights its Stretch mode and makes the layout jump until the next
+    relayout (e.g. a tab switch), which is the 'readjusts, then fixes itself'
+    glitch. Stretch handles that column's width on its own.
     """
-    table.resizeColumnsToContents()
+    stretch = getattr(table, _STRETCH_ATTR, None)
+    for c in range(table.columnCount()):
+        if c != stretch:
+            table.resizeColumnToContents(c)

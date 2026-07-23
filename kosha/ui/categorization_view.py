@@ -148,6 +148,13 @@ class CategorizationView(QWidget):
         self._sub_category.setCompleter(self._completer)
         form.addRow("Sub-category:", self._sub_category)
 
+        self._tag = QLineEdit()
+        self._tag.setPlaceholderText("optional, e.g. reimbursable, trip-goa")
+        self._tag_completer = QCompleter([])
+        self._tag_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._tag.setCompleter(self._tag_completer)
+        form.addRow("Tag:", self._tag)
+
         self._priority = QSpinBox(); self._priority.setRange(-100, 100)
         form.addRow("Priority:", self._priority)
 
@@ -162,7 +169,10 @@ class CategorizationView(QWidget):
         self._ignore_btn.setToolTip("Hide the selected keyword(s) from all visuals and tables")
         self._ignore_btn.clicked.connect(self._on_ignore)
         self._ignore_btn.setEnabled(False)
-        btns.addWidget(self._assign_btn); btns.addWidget(self._ignore_btn)
+        self._merge_btn = QPushButton("Merge…")
+        self._merge_btn.setToolTip("Combine similar keywords into one canonical keyword")
+        self._merge_btn.clicked.connect(self._on_merge)
+        btns.addWidget(self._assign_btn); btns.addWidget(self._ignore_btn); btns.addWidget(self._merge_btn)
         form.addRow(btns)
         return box
 
@@ -176,6 +186,7 @@ class CategorizationView(QWidget):
         self._sub_category.completer().setModel(
             _string_model(cat.distinct_sub_categories(self._db))
         )
+        self._tag.completer().setModel(_string_model(cat.distinct_tags(self._db)))
         # Re-sync the drill-in with whatever row is now selected: after an assign
         # the list reloads and the selected row index stays put (now a different
         # keyword), but itemSelectionChanged doesn't re-fire.
@@ -287,14 +298,16 @@ class CategorizationView(QWidget):
         _autosize(self._detail)
 
     def assign(self, keywords, category: str, sub_category: str = "",
-               priority: int = 0, excluded: bool = False, direction: str | None = None) -> None:
+               priority: int = 0, excluded: bool = False, direction: str | None = None,
+               tag: str = "") -> None:
         """Assign a category/sub-category to one or many keywords (also for tests).
 
         ``direction`` None writes a rule that applies to both sides.
         """
         if isinstance(keywords, str):
             keywords = [keywords]
-        cat.assign_many(self._db, keywords, category, sub_category or None, priority, excluded, direction)
+        cat.assign_many(self._db, keywords, category, sub_category or None, priority,
+                        excluded, direction, tag or None)
         self.refresh()
 
     def _on_assign(self) -> None:
@@ -303,12 +316,15 @@ class CategorizationView(QWidget):
             return
         category = self._category.currentData()
         sub = self._sub_category.text().strip()
+        tag = self._tag.text().strip()
         priority = self._priority.value()
         excluded = self._exclude.isChecked()
         # Each selected slice is written scoped to its own direction.
         for ks in sel:
-            cat.add_rule(self._db, ks.keyword, category, sub or None, priority, excluded, ks.direction)
+            cat.add_rule(self._db, ks.keyword, category, sub or None, priority,
+                         excluded, ks.direction, tag or None)
         self._sub_category.clear()
+        self._tag.clear()
         self._exclude.setChecked(False)
         self.refresh()
 
@@ -324,6 +340,15 @@ class CategorizationView(QWidget):
         for ks in sel:
             cat.set_excluded_keywords(self._db, [ks.keyword], True, direction=ks.direction)
         self.refresh()
+
+    def _on_merge(self) -> None:
+        """Open the merge dialog to combine similar keywords into one."""
+        from .merge_dialog import MergeKeywordsDialog
+        preselect = [ks.keyword for ks in self.selected_rows()]
+        dlg = MergeKeywordsDialog(self._db, preselect=preselect, parent=self)
+        if dlg.exec() == dlg.Accepted and dlg.merged:
+            self.refresh()
+            self.changed.emit()
 
 
 def _string_model(items):

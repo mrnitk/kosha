@@ -74,10 +74,12 @@ def import_stream(db: Database, source_file: str, account_id: int, raws, *, forc
         )
         batch_id = cur.lastrowid
 
+        from . import categorization
         for raw in raws:
             parsed += 1
             txn_type = features.CARD if force_card else features.derive_txn_type(raw.raw_description)
             keyword = features.derive_merchant_keyword(raw.raw_description, txn_type)
+            keyword = categorization.apply_alias(db, keyword)   # fold merged keywords
             dhash = features.dedup_hash(
                 raw.txn_date, raw.amount, raw.direction, raw.raw_description, account_id
             )

@@ -113,7 +113,7 @@ def test_transactions_drilldown_respects_filter(db):
     flt = analytics.Filter(categories=("Expense",))
     rows = analytics.transactions(db, flt)
     assert len(rows) == 4                            # 3 SWIGGY + 1 AMAZON
-    assert all(r[6] == "Expense" for r in rows)      # effective_category column
+    assert all(r[7] == "Expense" for r in rows)      # effective_category column
 
 
 # --- charts ------------------------------------------------------------------

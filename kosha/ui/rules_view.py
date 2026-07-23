@@ -43,15 +43,20 @@ class RulesView(QWidget):
         left.addWidget(QLabel("<b>Mapped keywords</b> — select one to edit or delete"))
 
         bar = QHBoxLayout()
-        self._filter = QLineEdit(); self._filter.setPlaceholderText("Filter by keyword…")
+        self._filter = QLineEdit(); self._filter.setPlaceholderText("Filter…")
         self._filter.setClearButtonEnabled(True)
         self._filter.textChanged.connect(self._load_rules)
+        self._filter_col = QComboBox()
+        for label in ("All", "Keyword", "Category", "Sub-category", "Tag", "Direction"):
+            self._filter_col.addItem(label, label)
+        self._filter_col.currentIndexChanged.connect(self._load_rules)
         bar.addWidget(QLabel("Filter:")); bar.addWidget(self._filter, stretch=1)
+        bar.addWidget(QLabel("in")); bar.addWidget(self._filter_col)
         left.addLayout(bar)
 
-        self._table = QTableWidget(0, 6)
+        self._table = QTableWidget(0, 7)
         self._table.setHorizontalHeaderLabels(
-            ["Keyword", "Dir", "Category", "Sub-category", "Excluded", "Priority"]
+            ["Keyword", "Dir", "Category", "Sub-category", "Tag", "Excluded", "Priority"]
         )
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -85,6 +90,10 @@ class RulesView(QWidget):
         self._sub_category.setPlaceholderText("e.g. Food, Rent, Investments")
         form.addRow("Sub-category:", self._sub_category)
 
+        self._tag = QLineEdit()
+        self._tag.setPlaceholderText("optional, e.g. reimbursable, trip-goa")
+        form.addRow("Tag:", self._tag)
+
         self._excluded = QCheckBox("Exclude from all visuals and the table")
         form.addRow("", self._excluded)
 
@@ -105,17 +114,35 @@ class RulesView(QWidget):
     def refresh(self) -> None:
         self._load_rules()
 
+    def _field_text(self, r, column: str) -> str:
+        """The value of ``column`` for rule ``r`` as a searchable string."""
+        parts = {
+            "Keyword": r.keyword,
+            "Category": cat.display_label(r.category),
+            "Sub-category": r.sub_category or "",
+            "Tag": r.tag or "",
+            "Direction": r.direction or "both",
+        }
+        if column == "All":
+            return " ".join(parts.values())
+        return parts.get(column, r.keyword)
+
     def _load_rules(self) -> None:
         text = self._filter.text().strip().upper() if hasattr(self, "_filter") else ""
-        self._rules = [r for r in cat.list_rules(self._db) if not text or text in r.keyword.upper()]
+        column = self._filter_col.currentData() if hasattr(self, "_filter_col") else "Keyword"
+        self._rules = [
+            r for r in cat.list_rules(self._db)
+            if not text or text in self._field_text(r, column).upper()
+        ]
         self._table.setRowCount(len(self._rules))
         for row, r in enumerate(self._rules):
             self._table.setItem(row, 0, QTableWidgetItem(r.keyword))
             self._table.setItem(row, 1, _centered(r.direction or "both"))
             self._table.setItem(row, 2, QTableWidgetItem(cat.display_label(r.category)))
             self._table.setItem(row, 3, QTableWidgetItem(r.sub_category or ""))
-            self._table.setItem(row, 4, _centered("yes" if r.excluded else ""))
-            self._table.setItem(row, 5, _centered(str(r.priority)))
+            self._table.setItem(row, 4, QTableWidgetItem(r.tag or ""))
+            self._table.setItem(row, 5, _centered("yes" if r.excluded else ""))
+            self._table.setItem(row, 6, _centered(str(r.priority)))
         _autosize(self._table)
         self._set_editor_enabled(False)
 
@@ -136,6 +163,7 @@ class RulesView(QWidget):
         self._direction.setCurrentIndex(max(0, self._direction.findData(r.direction)))
         self._category.setCurrentIndex(max(0, self._category.findData(r.category)))
         self._sub_category.setText(r.sub_category or "")
+        self._tag.setText(r.tag or "")
         self._excluded.setChecked(bool(r.excluded))
         self._priority.setValue(r.priority)
 
@@ -152,6 +180,7 @@ class RulesView(QWidget):
                 priority=self._priority.value(),
                 excluded=self._excluded.isChecked(),
                 direction=self._direction.currentData(),
+                tag=self._tag.text().strip() or None,
             )
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid rule", str(exc))
@@ -175,7 +204,7 @@ class RulesView(QWidget):
 
     def _set_editor_enabled(self, on: bool) -> None:
         for w in (self._keyword, self._direction, self._category, self._sub_category,
-                  self._excluded, self._priority, self._save_btn, self._delete_btn):
+                  self._tag, self._excluded, self._priority, self._save_btn, self._delete_btn):
             w.setEnabled(on)
 
 

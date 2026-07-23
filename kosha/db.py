@@ -20,7 +20,7 @@ import sqlcipher3
 
 from . import config, crypto, features
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class WrongPasswordError(Exception):
@@ -172,6 +172,8 @@ class Database:
             # schema below recreates the view, so no dedicated migration is needed.
             if current < 7:
                 self._migrate_to_v7(con)
+            if current < 9:
+                self._migrate_to_v9(con)
             con.executescript(_load_schema_sql())
             if current < 3:
                 self._migrate_to_v3(con)
@@ -221,6 +223,19 @@ class Database:
             con.execute(
                 "UPDATE transactions SET merchant_keyword=? WHERE id=?", (keyword, tid)
             )
+
+    @staticmethod
+    def _migrate_to_v9(con: sqlcipher3.Connection) -> None:
+        """Add the tag columns (keyword_aliases table is created by the schema).
+
+        Keywords are deliberately NOT re-derived here: existing rules are keyed on
+        the current keywords, so a re-derive would orphan them. New extraction
+        applies to future imports; the Merge action consolidates existing ones.
+        """
+        if not _has_column(con, "transactions", "tag_override"):
+            con.execute("ALTER TABLE transactions ADD COLUMN tag_override TEXT")
+        if not _has_column(con, "category_rules", "tag"):
+            con.execute("ALTER TABLE category_rules ADD COLUMN tag TEXT")
 
     @staticmethod
     def _migrate_to_v3(con: sqlcipher3.Connection) -> None:

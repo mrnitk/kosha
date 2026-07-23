@@ -197,13 +197,14 @@ def transactions(db: Database, flt: Filter, limit: int = 500):
     """Detail rows for drill-down, newest first.
 
     Columns: date, description, amount, direction, txn_type, source
-    (account name), category, sub_category.
+    (account name), keyword, category, sub_category, tag.
     """
     where, params = flt.where()
     sql = f"""
         SELECT txn_date, raw_description, amount, direction, txn_type,
-               account_name, effective_category,
-               COALESCE(effective_sub_category, '') AS sub
+               account_name, COALESCE(merchant_keyword, '') AS keyword,
+               effective_category, COALESCE(effective_sub_category, '') AS sub,
+               COALESCE(effective_tag, '') AS tag
         FROM v_transactions_resolved
         WHERE {where}
         ORDER BY txn_date DESC, id DESC

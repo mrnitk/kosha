@@ -83,6 +83,7 @@ class Rule:
     priority: int
     excluded: bool = False
     direction: Optional[str] = None      # None = applies to both directions
+    tag: Optional[str] = None            # free-form tag, resolved like sub_category
 
 
 def normalize_direction(direction: Optional[str]) -> Optional[str]:
@@ -141,6 +142,7 @@ def add_rule(
     priority: int = 0,
     excluded: bool = False,
     direction: Optional[str] = None,
+    tag: Optional[str] = None,
 ) -> int:
     """Create (or update in place) the rule for ``keyword`` in ``direction``.
 
@@ -154,21 +156,22 @@ def add_rule(
     category = normalize_category(category)
     direction = normalize_direction(direction)
     sub_category = sub_category.strip() if sub_category and sub_category.strip() else None
+    tag = tag.strip() if tag and tag.strip() else None
     exc = 1 if excluded else 0
 
     con = db.connection
     existing = _find_rule_id(con, norm, direction)
     if existing is not None:
         con.execute(
-            "UPDATE category_rules SET category=?, sub_category=?, priority=?, excluded=? WHERE id=?",
-            (category, sub_category, priority, exc, existing),
+            "UPDATE category_rules SET category=?, sub_category=?, priority=?, excluded=?, tag=? WHERE id=?",
+            (category, sub_category, priority, exc, tag, existing),
         )
         con.commit()
         return existing
     cur = con.execute(
-        "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded, direction) "
-        "VALUES (?,?,?,?,?,?)",
-        (norm, category, sub_category, priority, exc, direction),
+        "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded, direction, tag) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (norm, category, sub_category, priority, exc, direction, tag),
     )
     con.commit()
     return cur.lastrowid
@@ -182,6 +185,7 @@ def assign_many(
     priority: int = 0,
     excluded: bool = False,
     direction: Optional[str] = None,
+    tag: Optional[str] = None,
 ) -> int:
     """Bulk-assign the same category/sub-category to several keywords.
 
@@ -191,6 +195,7 @@ def assign_many(
     category = normalize_category(category)
     direction = normalize_direction(direction)
     sub = sub_category.strip() if sub_category and sub_category.strip() else None
+    tag = tag.strip() if tag and tag.strip() else None
     exc = 1 if excluded else 0
     con = db.connection
     count = 0
@@ -202,14 +207,14 @@ def assign_many(
             existing = _find_rule_id(con, norm, direction)
             if existing is not None:
                 con.execute(
-                    "UPDATE category_rules SET category=?, sub_category=?, priority=?, excluded=? WHERE id=?",
-                    (category, sub, priority, exc, existing),
+                    "UPDATE category_rules SET category=?, sub_category=?, priority=?, excluded=?, tag=? WHERE id=?",
+                    (category, sub, priority, exc, tag, existing),
                 )
             else:
                 con.execute(
-                    "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded, direction) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (norm, category, sub, priority, exc, direction),
+                    "INSERT INTO category_rules(keyword, category, sub_category, priority, excluded, direction, tag) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (norm, category, sub, priority, exc, direction, tag),
                 )
             count += 1
         con.commit()
@@ -299,6 +304,7 @@ def edit_rule(
     priority: int,
     excluded: bool,
     direction: Optional[str],
+    tag: Optional[str] = None,
 ) -> None:
     """Fully rewrite an existing rule, incl. renaming its keyword/direction.
 
@@ -313,6 +319,7 @@ def edit_rule(
     category = normalize_category(category)
     direction = normalize_direction(direction)
     sub = sub_category.strip() if sub_category and sub_category.strip() else None
+    tag = tag.strip() if tag and tag.strip() else None
     exc = 1 if excluded else 0
     con = db.connection
     try:
@@ -321,8 +328,8 @@ def edit_rule(
             con.execute("DELETE FROM category_rules WHERE id=?", (clash,))
         con.execute(
             "UPDATE category_rules SET keyword=?, category=?, sub_category=?, "
-            "priority=?, excluded=?, direction=? WHERE id=?",
-            (norm, category, sub, priority, exc, direction, rule_id),
+            "priority=?, excluded=?, direction=?, tag=? WHERE id=?",
+            (norm, category, sub, priority, exc, direction, tag, rule_id),
         )
         con.commit()
     except Exception:
@@ -338,10 +345,79 @@ def delete_rule(db: Database, rule_id: int) -> None:
 
 def list_rules(db: Database) -> list[Rule]:
     rows = db.connection.execute(
-        "SELECT id, keyword, category, sub_category, priority, COALESCE(excluded, 0), direction "
+        "SELECT id, keyword, category, sub_category, priority, COALESCE(excluded, 0), direction, tag "
         "FROM category_rules ORDER BY category, keyword"
     ).fetchall()
-    return [Rule(id_, kw, cat_, sub, pri, bool(exc), d) for id_, kw, cat_, sub, pri, exc, d in rows]
+    return [Rule(id_, kw, cat_, sub, pri, bool(exc), d, tag)
+            for id_, kw, cat_, sub, pri, exc, d, tag in rows]
+
+
+# --- keyword merging (grouping similar transactions) -------------------------
+
+def all_keywords(db: Database) -> list[tuple[str, int]]:
+    """(merchant_keyword, txn_count) for every distinct keyword, most-used first."""
+    return db.connection.execute(
+        """
+        SELECT merchant_keyword, COUNT(*) AS n
+        FROM transactions
+        WHERE merchant_keyword IS NOT NULL AND merchant_keyword <> ''
+        GROUP BY merchant_keyword
+        ORDER BY n DESC, merchant_keyword
+        """
+    ).fetchall()
+
+
+def apply_alias(db: Database, keyword: Optional[str]) -> Optional[str]:
+    """Resolve a raw keyword to its canonical form via keyword_aliases (or itself)."""
+    if not keyword:
+        return keyword
+    row = db.connection.execute(
+        "SELECT canonical_keyword FROM keyword_aliases WHERE raw_keyword=?", (keyword,)
+    ).fetchone()
+    return row[0] if row else keyword
+
+
+def merge_keywords(db: Database, raw_keywords: list[str], canonical: str) -> int:
+    """Fold ``raw_keywords`` into ``canonical`` — one keyword for similar txns.
+
+    Rewrites existing transactions and rules to the canonical keyword, and records
+    an alias so future imports fold automatically too. Retroactive and persistent.
+    Returns the number of transactions re-pointed.
+    """
+    canon = features.normalize_keyword(canonical)
+    if not canon:
+        raise ValueError("canonical keyword is empty after normalization")
+    con = db.connection
+    moved = 0
+    try:
+        for raw in raw_keywords:
+            norm = features.normalize_keyword(raw)
+            if not norm or norm == canon:
+                continue
+            cur = con.execute(
+                "UPDATE transactions SET merchant_keyword=? WHERE merchant_keyword=?",
+                (canon, norm),
+            )
+            moved += cur.rowcount or 0
+            # Re-point any rule on the old keyword so categorization follows.
+            con.execute(
+                "UPDATE category_rules SET keyword=? WHERE keyword=?", (canon, norm)
+            )
+            # Record the alias (and rewrite any alias that pointed at the old one).
+            con.execute(
+                "INSERT INTO keyword_aliases(raw_keyword, canonical_keyword) VALUES (?,?) "
+                "ON CONFLICT(raw_keyword) DO UPDATE SET canonical_keyword=excluded.canonical_keyword",
+                (norm, canon),
+            )
+            con.execute(
+                "UPDATE keyword_aliases SET canonical_keyword=? WHERE canonical_keyword=?",
+                (canon, norm),
+            )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return moved
 
 
 # --- manual per-transaction overrides ----------------------------------------
@@ -490,6 +566,19 @@ def distinct_sub_categories(db: Database) -> list[str]:
         SELECT sub_category FROM category_rules WHERE sub_category IS NOT NULL
         UNION
         SELECT sub_category_override FROM transactions WHERE sub_category_override IS NOT NULL
+        ORDER BY 1
+        """
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def distinct_tags(db: Database) -> list[str]:
+    """Tags already in use, for autocomplete."""
+    rows = db.connection.execute(
+        """
+        SELECT tag FROM category_rules WHERE tag IS NOT NULL
+        UNION
+        SELECT tag_override FROM transactions WHERE tag_override IS NOT NULL
         ORDER BY 1
         """
     ).fetchall()

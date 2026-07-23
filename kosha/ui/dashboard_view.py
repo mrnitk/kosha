@@ -76,9 +76,10 @@ class DashboardView(QWidget):
         self._web = self._make_web_view()
         splitter.addWidget(self._web)
 
-        self._table = QTableWidget(0, 8)
+        self._table = QTableWidget(0, 10)
         self._table.setHorizontalHeaderLabels(
-            ["Date", "Description", "Amount", "Dir", "Type", "Source", "Category", "Sub-category"]
+            ["Date", "Description", "Amount", "Dir", "Type", "Source",
+             "Keyword", "Category", "Sub-category", "Tag"]
         )
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
@@ -273,10 +274,12 @@ class DashboardView(QWidget):
     def _load_table(self) -> None:
         rows = analytics.transactions(self._db, self.current_filter())
         self._table.setRowCount(len(rows))
-        for r, (txn_date, desc, amount, direction, txn_type, source, category, sub) in enumerate(rows):
+        for r, (txn_date, desc, amount, direction, txn_type, source, keyword,
+                category, sub, tag) in enumerate(rows):
             cells = [
                 txn_date, desc, format_inr(amount), direction, txn_type or "",
-                source or "", categorization.display_label(category), sub or "",
+                source or "", keyword or "", categorization.display_label(category),
+                sub or "", tag or "",
             ]
             for c, val in enumerate(cells):
                 item = QTableWidgetItem(str(val))

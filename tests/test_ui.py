@@ -192,6 +192,22 @@ def test_rules_view_edits_a_mapping(tmp_path):
     db.lock()
 
 
+def test_rules_view_filter_by_column(tmp_path):
+    db = _make_db(tmp_path)
+    cat.add_rule(db, "SWIGGY LIMITED", "Expense", "Food")
+    cat.add_rule(db, "ZERODHA", "Savings", "Investments")
+    view = RulesView(db)
+    # Filter by Sub-category = "Food" should match only the SWIGGY rule.
+    view._filter_col.setCurrentIndex(view._filter_col.findData("Sub-category"))
+    view._filter.setText("Food")
+    kws = {view._table.item(r, 0).text() for r in range(view._table.rowCount())}
+    assert kws == {"SWIGGY LIMITED"}
+    # Same text under Keyword column matches nothing.
+    view._filter_col.setCurrentIndex(view._filter_col.findData("Keyword"))
+    assert view._table.rowCount() == 0
+    db.lock()
+
+
 def test_rules_view_deletes_a_mapping(tmp_path):
     db = _make_db(tmp_path)
     cat.add_rule(db, "SWIGGY LIMITED", "Expense", "Food")

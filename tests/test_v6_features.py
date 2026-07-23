@@ -53,12 +53,13 @@ def test_view_exposes_account_source(db):
 
 def test_transactions_include_source_and_subcategory(db):
     rows = analytics.transactions(db, analytics.Filter())
-    # columns: date, desc, amount, direction, txn_type, source, category, sub
+    # columns: date, desc, amount, direction, txn_type, source, keyword, category, sub, tag
     by_desc = {r[1]: r for r in rows}
     z = by_desc["DESC ZERODHA"]
     assert z[5] == "HDFC Bank"          # source
-    assert z[6] == "Savings"            # category
-    assert z[7] == "Investments"        # sub-category
+    assert z[6] == "ZERODHA"            # keyword
+    assert z[7] == "Savings"            # category
+    assert z[8] == "Investments"        # sub-category
 
 
 def test_list_accounts(db):

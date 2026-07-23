@@ -30,9 +30,18 @@ CREATE TABLE IF NOT EXISTS transactions (
     merchant_keyword      TEXT,                -- extracted, normalized (e.g. 'SWIGGY')
     category_override     TEXT,                -- manual per-txn override; NULL = use rules
     sub_category_override TEXT,
+    tag_override          TEXT,                -- manual per-txn tag; NULL = inherit rule
     excluded_override     INTEGER,             -- manual per-txn exclude; NULL = inherit rule
     import_batch_id       INTEGER REFERENCES import_batches(id),
     dedup_hash            TEXT UNIQUE          -- hash(date+amount+norm desc+account)
+);
+
+-- Merge similar merchant keywords under one canonical name. Applied when the
+-- keyword is written (import + Merge action), so merchant_keyword ends up holding
+-- the canonical value and all existing queries group correctly.
+CREATE TABLE IF NOT EXISTS keyword_aliases (
+    raw_keyword       TEXT PRIMARY KEY,        -- a normalized keyword to fold away
+    canonical_keyword TEXT NOT NULL            -- the keyword it becomes
 );
 
 -- User-controlled keyword -> category mappings; applied retroactively.
@@ -41,6 +50,7 @@ CREATE TABLE IF NOT EXISTS category_rules (
     keyword       TEXT NOT NULL,              -- matched against merchant_keyword
     category      TEXT NOT NULL,
     sub_category  TEXT,
+    tag           TEXT,                       -- free-form tag, resolved like sub_category
     priority      INTEGER DEFAULT 0,          -- higher priority wins on conflicts
     excluded      INTEGER DEFAULT 0,          -- 1 = hide these txns from visuals + table
     direction     TEXT                        -- NULL = any; 'debit'|'credit' = scoped
@@ -88,15 +98,17 @@ SELECT
         CASE t.direction WHEN 'credit' THEN 'Income' ELSE 'Expense' END
     ) AS effective_category,
     COALESCE(t.sub_category_override, br.sub_category) AS effective_sub_category,
+    COALESCE(t.tag_override, br.tag) AS effective_tag,
     COALESCE(t.excluded_override, br.excluded, 0) AS effective_excluded,
     a.name AS account_name,          -- 'source': which bank/card the txn came from
     a.account_type AS account_type   -- 'bank' | 'credit_card'
 FROM transactions t
 LEFT JOIN accounts a ON a.id = t.account_id
 LEFT JOIN (
-    SELECT keyword, tgt_direction, category, sub_category, excluded FROM (
+    SELECT keyword, tgt_direction, category, sub_category, tag, excluded FROM (
         SELECT r.keyword AS keyword, d.dir AS tgt_direction,
-               r.category AS category, r.sub_category AS sub_category, r.excluded AS excluded,
+               r.category AS category, r.sub_category AS sub_category,
+               r.tag AS tag, r.excluded AS excluded,
                ROW_NUMBER() OVER (
                    PARTITION BY r.keyword, d.dir
                    ORDER BY (CASE WHEN r.direction IS NULL THEN 0 ELSE 1 END) DESC,
