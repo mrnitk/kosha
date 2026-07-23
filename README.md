@@ -1,91 +1,130 @@
-# Kosha — Personal Expense Tracker (v3)
+# Kosha — Private, Secure & Offline Expense Tracker
 
-A fully local, encrypted personal expense tracker for Windows. Successor to ExpenseTracker_v2. Single user. No cloud, no network calls anywhere in the app.
+Kosha is a **fully local, encrypted** personal expense tracker for Windows. You
+import your bank and credit-card statements, and Kosha turns them into a
+categorized, searchable picture of your money — **with zero network calls and no
+cloud**. Your data lives only on your machine, encrypted at rest.
 
-## Core Requirements
+Built for Indian bank statements (UPI / NEFT / IMPS / cards / SI mandates) and
+₹ Indian number formatting, but the generic importer works with any bank.
 
-1. **Statement import** — Import bank and credit card statements (PDF / Excel / CSV) into a local database.
-2. **Feature engineering** — On import, derive: transaction type (UPI / NEFT / IMPS / card / ATM / standing instruction), merchant keyword (extracted from the raw description), and sub-category.
-3. **User-controlled categorization** — The user buckets keywords into categories/sub-categories via the UI. Rules apply retroactively to all historical transactions. Per-transaction manual overrides always win over rules.
-4. **Interactive visualizations** — User-adjustable charts: date range, category filters, granularity (month/quarter/year), drill-down from chart to transaction list.
-5. **Trends** — Expense, income, and savings-rate trends over time; category breakdowns; top merchants; month-on-month deltas.
-6. **Fully local + encrypted** — Entire database encrypted at rest (SQLCipher, AES-256). Master password on launch; key derived via Argon2/PBKDF2; key never stored on disk. Zero network calls.
-7. **Normal Windows app** — Installs via a proper installer, Start Menu shortcut, runs like native software.
+> **Privacy by design:** the entire database is encrypted with SQLCipher
+> (AES‑256). It's unlocked with a master password whose key is derived via Argon2
+> and never written to disk. The app makes no network requests, ever.
 
-## Tech Stack
+---
 
-- **Language:** Python 3.12
-- **UI:** PySide6 (Qt Widgets); Plotly charts embedded via QWebEngineView
-- **Database:** SQLite encrypted with SQLCipher (`sqlcipher3` package)
-- **Parsing:** pandas + openpyxl (Excel/CSV), pdfplumber (PDF statements)
-- **Packaging:** PyInstaller (`--onedir` mode) wrapped with Inno Setup installer
-- **Data location:** `%APPDATA%\Kosha\` (survives app updates)
+## Features
 
-## Database Schema (initial)
+**Import**
+- Auto-detecting parsers for HDFC **bank** and **credit-card** `.xls` statements.
+- A **standard template** importer (`Date | Transaction Remarks | Debit | Credit
+  | Source | Account Type`) so you can bring in **any bank** from CSV / XLSX /
+  XLS — one file can hold multiple accounts via the `Source` column.
+- Automatic **deduplication** — re-importing overlapping statements skips
+  duplicates.
 
-```sql
--- All statements land here with a common schema
-CREATE TABLE transactions (
-    id INTEGER PRIMARY KEY,
-    txn_date DATE NOT NULL,
-    raw_description TEXT NOT NULL,        -- verbatim from statement, never modified
-    amount REAL NOT NULL,
-    direction TEXT NOT NULL,              -- 'debit' | 'credit'
-    account_id INTEGER NOT NULL REFERENCES accounts(id),
-    txn_type TEXT,                        -- 'UPI' | 'NEFT' | 'IMPS' | 'CARD' | 'ATM' | 'SI' | 'OTHER'
-    merchant_keyword TEXT,                -- extracted, normalized (e.g. 'SWIGGY')
-    category_override TEXT,               -- manual per-transaction override; NULL = use rules
-    sub_category_override TEXT,
-    import_batch_id INTEGER REFERENCES import_batches(id),
-    dedup_hash TEXT UNIQUE                -- hash(date + amount + normalized description + account)
-);
+**Categorization**
+- **Direction-aware keyword rules** that apply **retroactively** to all history
+  (resolved live in a SQL view — no data rewrite). A merchant can map two ways,
+  e.g. an investment platform's debits → *Savings*, its credits → *Income*.
+- Categories: **Income / Expense / Savings / Transfer** (credit-card bill
+  payments are Transfers, kept out of the income/expense math to avoid
+  double-counting), plus free-text **sub-category** and a single **tag**.
+- **Keyword merge** to group messy variants (`A S`, `NEST`, `A S NEST` → one
+  keyword) — retroactive and auto-applied to future imports.
+- **Exclude** noisy keywords from all visuals and tables.
 
-CREATE TABLE accounts (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,                   -- e.g. 'HDFC Savings', 'Amex Card'
-    account_type TEXT NOT NULL,           -- 'bank' | 'credit_card'
-    institution TEXT NOT NULL             -- maps to parser class
-);
+**Dashboard & insights**
+- Interactive **Plotly** charts: income vs expense vs savings, expense by
+  sub-category, spend share (donut), top merchants.
+- Filters: date range, category, sub-category, **source (account)**, and a
+  **global search** across description / keyword / amount.
+- Monthly **average / min / max** stats, and a drill-down transaction table.
 
-CREATE TABLE category_rules (
-    id INTEGER PRIMARY KEY,
-    keyword TEXT NOT NULL,                -- matched against merchant_keyword
-    category TEXT NOT NULL,
-    sub_category TEXT,
-    priority INTEGER DEFAULT 0            -- higher priority wins on conflicts
-);
+**More**
+- **Recurring / subscriptions** detection — surfaces regular payments (SIPs,
+  EMIs, rent, subscriptions) with cadence, next-date estimate, and your total
+  **monthly committed outflow**.
+- **Encrypted backup & restore** of the whole vault (a password-protected copy).
+- Consistent light theme; Indian number formatting (`3,00,000`).
 
-CREATE TABLE import_batches (
-    id INTEGER PRIMARY KEY,
-    source_file TEXT NOT NULL,
-    account_id INTEGER REFERENCES accounts(id),
-    imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    row_count INTEGER
-);
+---
+
+## Tech stack
+
+| Area | Choice |
+|------|--------|
+| Language | Python 3.14 |
+| UI | PySide6 (Qt Widgets), Plotly charts in a `QWebEngineView` |
+| Encryption / DB | SQLite + SQLCipher (AES‑256) via `sqlcipher3-wheels`; Argon2 key derivation (`argon2-cffi`) |
+| Statement parsing | `xlrd` (.xls), `openpyxl` (.xlsx), stdlib `csv` |
+| Packaging | PyInstaller (onedir) + Inno Setup installer (Windows) |
+| Data location | `%APPDATA%\Kosha\` (survives updates) |
+
+---
+
+## Getting started (from source)
+
+Requires **Python 3.14** on Windows.
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python -m kosha
 ```
 
-Effective category resolution (in queries/views): `COALESCE(category_override, rule_match.category, 'Uncategorized')`.
+On first launch you set a **master password** — this creates the encrypted vault
+at `%APPDATA%\Kosha\`. There is no password recovery (that's the point), so keep
+it safe and use **File ▸ Backup vault** for a spare copy.
 
-## Architecture Notes
+### Importing your statements
+- **File ▸ Import statements…** — drop in HDFC `.xls` files (auto-detected).
+- **File ▸ Download blank template…**, fill it in, then **Import from template…**
+  — works for any bank; set the `Source` column to label each account.
 
-- **One parser class per institution**, all producing the common transactions schema. Base class defines the interface; institution classes handle layout specifics.
-- **Deduplication:** `dedup_hash` unique constraint means re-importing an overlapping statement silently skips duplicates (report skipped count to user).
-- **Raw description is immutable.** All enrichment (type, keyword, category) is derived and re-derivable.
-- **Categorization UI:** show uncategorized merchant keywords ranked by total spend and frequency; user assigns category via dropdown. Assignments write to `category_rules` and re-resolve historical data instantly.
-- **Charts:** Plotly HTML rendered in QWebEngineView. Core dashboards: (a) monthly expense by category (stacked bar), (b) income vs expense vs savings rate line, (c) category drill-down → transaction table, (d) top merchants, (e) MoM deltas.
-- **Security:** SQLCipher pragma key set from Argon2-derived key at unlock. Lock the app (drop key from memory) on close. Encrypted backups = file copies of the DB to a user-chosen folder.
+---
 
-## Build Order (work in phases; each phase must run before moving on)
+## Build a Windows installer
 
-1. **Phase 1 — Core DB:** Project skeleton, venv, dependencies. SQLCipher database module: create/unlock/lock, schema migration, master password setup flow (CLI-level is fine for now).
-2. **Phase 2 — First parser end-to-end:** One institution's Excel/CSV parser → feature engineering (txn_type, merchant_keyword) → insert with dedup. Test against sample files in `samples/`.
-3. **Phase 3 — Categorization engine + UI:** Rules table CRUD, uncategorized-keyword review screen, retroactive resolution, manual overrides.
-4. **Phase 4 — Dashboard:** Main window, Plotly views with filters (date range, categories, granularity), drill-down.
-5. **Phase 5 — Remaining parsers:** Add other institutions (including PDF-based via pdfplumber).
-6. **Phase 6 — Packaging:** PyInstaller onedir build, Inno Setup installer, app icon, `%APPDATA%` data path handling, first-run experience.
+See [PACKAGING.md](PACKAGING.md). In short:
 
-## Conventions
+```bash
+python -m PyInstaller --noconfirm --clean kosha.spec      # -> dist\Kosha\
+# then, with Inno Setup 6 installed:
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\kosha.iss
+```
 
-- Type hints everywhere; `pytest` tests for parsers and the rules engine (parsers are the highest-risk code).
-- Sample statements in `samples/` are **sanitized** (fake account numbers, real layout). Never commit real financial data — `.gitignore` the data directory and any real statements.
-- Git checkpoint at the end of every working phase.
+---
+
+## Development
+
+```bash
+pip install -r requirements.txt
+pytest -q          # ~200 tests
+```
+
+Design notes:
+- **Raw statement text is immutable** — transaction type, merchant keyword,
+  category and tag are all *derived* and re-derivable.
+- Category resolution lives in the `v_transactions_resolved` **SQL view**, so
+  rule/keyword changes apply to all history instantly.
+- The encryption key is set as the SQLCipher pragma at unlock and dropped from
+  memory on close.
+
+---
+
+## Privacy & data
+
+- **Nothing leaves your machine.** No telemetry, no accounts, no sync.
+- The encrypted database (`kosha.db`) and its salt live in `%APPDATA%\Kosha\` and
+  are **git-ignored** — real financial data is never part of this repository.
+- The only sample data in the repo is **fabricated** test fixtures
+  (`tests/fixtures/`), used to test the parsers.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Nitesh Kumar
