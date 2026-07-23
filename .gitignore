@@ -34,3 +34,6 @@ Thumbs.db
 # --- scratch ---
 scratchpad/
 _wheeltest*/
+
+# Encrypted vault backups (never commit user data)
+kosha-backup-*.zip

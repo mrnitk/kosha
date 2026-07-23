@@ -67,6 +67,14 @@ class Database:
     def is_unlocked(self) -> bool:
         return self._con is not None
 
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
+
+    @property
+    def salt_path(self) -> Path:
+        return self._salt_path
+
     # --- lifecycle -----------------------------------------------------------
 
     def create(self, password: str, params: Optional[crypto.Argon2Params] = None) -> None:

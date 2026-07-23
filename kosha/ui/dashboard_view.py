@@ -16,7 +16,8 @@ from pathlib import Path
 from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDateEdit, QHBoxLayout, QHeaderView, QLabel,
-    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLineEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from .. import analytics, categorization, charts
@@ -138,6 +139,11 @@ class DashboardView(QWidget):
         self._source = QComboBox()   # 'All' + each account (id in userData)
         self._source.addItem("All sources", None)
 
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search description / keyword / amount…")
+        self._search.setClearButtonEnabled(True)
+        self._search.returnPressed.connect(self.refresh)
+
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self.refresh)
 
@@ -147,8 +153,8 @@ class DashboardView(QWidget):
         bar.addWidget(self._category)
         bar.addWidget(self._sub_category)
         bar.addWidget(self._source)
+        bar.addWidget(self._search, stretch=1)
         bar.addWidget(apply_btn)
-        bar.addStretch(1)
         return bar
 
     # --- filter state --------------------------------------------------------
@@ -218,6 +224,7 @@ class DashboardView(QWidget):
             categories=categories,
             sub_categories=sub_categories,
             account_ids=account_ids,
+            search=self._search.text().strip(),
         )
 
     def granularity(self) -> str:

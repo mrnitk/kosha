@@ -226,7 +226,7 @@ def test_main_window_has_rules_tab(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)
     titles = [win._tabs.tabText(i) for i in range(win._tabs.count())]
-    assert titles == ["Dashboard", "Categorize", "Rules"]
+    assert titles == ["Dashboard", "Categorize", "Rules", "Recurring"]
     win.close()
 
 
@@ -315,6 +315,27 @@ def test_categorize_marks_dashboard_dirty_not_rebuilt(tmp_path):
     win._tabs.setCurrentWidget(win._dashboard)
     assert win._dashboard._dirty is False
     win.close()
+
+
+def test_main_window_has_recurring_tab_and_backup(tmp_path):
+    db = _make_db(tmp_path)
+    win = MainWindow(db)
+    titles = [win._tabs.tabText(i) for i in range(win._tabs.count())]
+    assert titles == ["Dashboard", "Categorize", "Rules", "Recurring"]
+    file_menu = next(m for m in win.menuBar().findChildren(type(win.menuBar().addMenu("x")))
+                     if "File" in m.title())
+    labels = [a.text() for a in file_menu.actions()]
+    assert any("Backup" in t for t in labels) and any("Restore" in t for t in labels)
+    win.close()
+
+
+def test_dashboard_has_search_box(tmp_path):
+    from kosha.ui.dashboard_view import DashboardView
+    db = _make_db(tmp_path)
+    dash = DashboardView(db)
+    dash._search.setText("swiggy")
+    assert dash.current_filter().search == "swiggy"
+    db.lock()
 
 
 def test_main_window_has_template_actions(tmp_path):

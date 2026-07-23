@@ -15,6 +15,7 @@ from ..parsers import REGISTRY
 from . import theme
 from .categorization_view import CategorizationView
 from .dashboard_view import DashboardView
+from .recurring_view import RecurringView
 from .rules_view import RulesView
 
 _IMPORT_FILTER = "Statements (*.xls *.xlsx *.csv *.pdf);;All files (*)"
@@ -32,6 +33,7 @@ class MainWindow(QMainWindow):
         self._dashboard = DashboardView(db)
         self._view = CategorizationView(db)
         self._rules = RulesView(db)
+        self._recurring = RecurringView(db)
         # Rebuilding the dashboard's Plotly page is ~1s, so cross-tab edits only
         # flag it dirty; it re-renders when the user actually opens it (below).
         self._view.changed.connect(self._update_status)
@@ -46,6 +48,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._view, "Categorize")
         self._tabs.addTab(self._rules, "Rules")
+        self._tabs.addTab(self._recurring, "Recurring")
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self._tabs)
 
@@ -57,9 +60,12 @@ class MainWindow(QMainWindow):
         theme.force_light_titlebar(self)   # keep the title bar light under OS dark mode
 
     def _on_tab_changed(self, _index: int) -> None:
-        # Only pay for the dashboard rebuild when it's brought to the front.
-        if self._tabs.currentWidget() is self._dashboard:
-            self._dashboard.refresh_if_dirty()
+        # Refresh a tab's data when it's brought to the front.
+        current = self._tabs.currentWidget()
+        if current is self._dashboard:
+            self._dashboard.refresh_if_dirty()   # ~1s Plotly rebuild — only when shown
+        elif current is self._recurring:
+            self._recurring.refresh()
 
     # --- menus ---------------------------------------------------------------
 
@@ -82,6 +88,15 @@ class MainWindow(QMainWindow):
         clear_action = QAction("&Clear all data…", self)
         clear_action.triggered.connect(self._clear_data_dialog)
         file_menu.addAction(clear_action)
+
+        file_menu.addSeparator()
+        backup_action = QAction("&Backup vault…", self)
+        backup_action.triggered.connect(self._backup_vault)
+        file_menu.addAction(backup_action)
+
+        restore_action = QAction("&Restore from backup…", self)
+        restore_action.triggered.connect(self._restore_vault)
+        file_menu.addAction(restore_action)
 
         file_menu.addSeparator()
         quit_action = QAction("&Quit", self)
@@ -138,9 +153,61 @@ class MainWindow(QMainWindow):
     def _refresh_after_import(self) -> None:
         self._view.refresh()
         self._rules.refresh()
+        self._recurring.refresh()
         self._dashboard.reset_filter_bounds()
         self._dashboard.refresh()
         self._update_status()
+
+    # --- backup / restore ----------------------------------------------------
+
+    def _backup_vault(self) -> None:
+        """Save an encrypted backup (the DB + salt) to a zip the user chooses."""
+        from datetime import date as _date
+        from .. import backup
+        default = f"kosha-backup-{_date.today().isoformat()}.zip"
+        path, _ = QFileDialog.getSaveFileName(self, "Save encrypted backup", default,
+                                              "Backup archive (*.zip)")
+        if not path:
+            return
+        if not path.lower().endswith(".zip"):
+            path += ".zip"
+        try:
+            backup.create_backup(path, self._db.db_path, self._db.salt_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Backup failed", str(exc))
+            return
+        QMessageBox.information(
+            self, "Backup saved",
+            f"Encrypted backup saved to:\n{path}\n\nIt opens only with this vault's "
+            "master password. Keep it somewhere safe.")
+
+    def _restore_vault(self) -> None:
+        """Replace the current vault with a backup, then close (reopen to unlock)."""
+        from .. import backup
+        path, _ = QFileDialog.getOpenFileName(self, "Select a backup to restore", "",
+                                              "Backup archive (*.zip);;All files (*)")
+        if not path:
+            return
+        if not backup.is_valid_backup(path):
+            QMessageBox.warning(self, "Not a valid backup",
+                                "That file isn't a Kosha backup (needs kosha.db and kosha.salt).")
+            return
+        if QMessageBox.warning(
+            self, "Restore backup",
+            "This REPLACES your current vault with the backup and cannot be undone.\n\n"
+            "Kosha will close afterwards — reopen it and unlock with the backup's "
+            "master password.\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
+            return
+        try:
+            self._db.lock()   # close the connection before overwriting the files
+            backup.restore_backup(path, self._db.db_path, self._db.salt_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Restore failed", str(exc))
+            return
+        QMessageBox.information(self, "Restored",
+                                "Vault restored. Kosha will now close — reopen it to unlock.")
+        self.close()
 
     def _import_paths(self, paths: list[str]) -> None:
         try:
@@ -187,6 +254,7 @@ class MainWindow(QMainWindow):
 
         self._view.refresh()
         self._rules.refresh()
+        self._recurring.refresh()
         self._dashboard.reset_filter_bounds()
         self._dashboard.refresh()
         self._update_status()

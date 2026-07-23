@@ -11,7 +11,7 @@ Amounts follow the ``direction`` column: 'debit' is spending, 'credit' is income
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from .db import Database
@@ -33,6 +33,7 @@ class Filter:
     sub_categories: tuple[str, ...] = field(default_factory=tuple)
     account_ids: tuple[int, ...] = field(default_factory=tuple)
     include_excluded: bool = False
+    search: str = ""
 
     def where(self, alias: str = "") -> tuple[str, list]:
         """Build a SQL WHERE fragment (without the keyword) and its params."""
@@ -54,6 +55,12 @@ class Filter:
             marks = ",".join("?" * len(self.account_ids))
             clauses.append(f"{p}account_id IN ({marks})")
             params.extend(self.account_ids)
+        if self.search and self.search.strip():
+            like = f"%{self.search.strip()}%"
+            clauses.append(
+                f"({p}raw_description LIKE ? OR {p}merchant_keyword LIKE ? "
+                f"OR CAST({p}amount AS TEXT) LIKE ?)")
+            params.extend([like, like, like])
         if not self.include_excluded:
             clauses.append(f"COALESCE({p}effective_excluded, 0) = 0")
         return (" AND ".join(clauses) if clauses else "1=1"), params
@@ -248,6 +255,94 @@ def monthly_stats(db: Database, flt: Filter) -> dict[str, dict[str, float]]:
         else:
             out[label] = {"avg": 0.0, "min": 0.0, "max": 0.0, "total": 0.0, "months": 0}
     return out
+
+
+@dataclass(frozen=True)
+class Recurring:
+    """A merchant that recurs on a regular cadence — a likely subscription/EMI/SIP."""
+
+    keyword: str
+    cadence: str            # 'weekly' | 'fortnightly' | 'monthly' | 'quarterly' | ...
+    count: int
+    avg_amount: float
+    last_date: date
+    next_estimate: date
+    monthly_amount: float   # avg amount normalized to a per-month figure
+    category: str
+
+
+_CADENCE_BANDS = [
+    ("weekly", 5, 9), ("fortnightly", 12, 18), ("monthly", 26, 33),
+    ("bi-monthly", 55, 70), ("quarterly", 82, 100), ("half-yearly", 170, 200),
+    ("yearly", 330, 400),
+]
+
+
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def _classify_cadence(median_interval: float) -> Optional[str]:
+    for label, lo, hi in _CADENCE_BANDS:
+        if lo <= median_interval <= hi:
+            return label
+    return None
+
+
+def recurring_merchants(db: Database, flt: Optional[Filter] = None,
+                        min_occurrences: int = 3) -> tuple[list[Recurring], float]:
+    """Detect recurring debit merchants and the total monthly committed outflow.
+
+    Groups debit transactions by keyword, and flags those that repeat on a
+    regular cadence (consistent gaps between dates). Excludes Transfers (e.g.
+    credit-card bill payments) so the underlying spend isn't double-counted, and
+    excluded transactions. Returns (rows sorted by monthly amount desc, total).
+    """
+    flt = flt or Filter()
+    where, params = flt.where()
+    sql = f"""
+        SELECT merchant_keyword, txn_date, amount, effective_category
+        FROM v_transactions_resolved
+        WHERE direction='debit' AND merchant_keyword IS NOT NULL AND merchant_keyword<>''
+              AND effective_category<>'Transfer' AND {where}
+        ORDER BY merchant_keyword, txn_date
+    """
+    by_kw: dict[str, list] = {}
+    for kw, d, amount, cat in db.connection.execute(sql, params).fetchall():
+        by_kw.setdefault(kw, []).append((date.fromisoformat(d), amount, cat))
+
+    out: list[Recurring] = []
+    for kw, rows in by_kw.items():
+        if len(rows) < min_occurrences:
+            continue
+        dates = [r[0] for r in rows]
+        intervals = [(dates[i] - dates[i - 1]).days for i in range(1, len(dates))]
+        intervals = [i for i in intervals if i > 0]
+        if not intervals:
+            continue
+        med = _median(intervals)
+        cadence = _classify_cadence(med)
+        if cadence is None:
+            continue
+        # Require regularity: most gaps close to the median.
+        consistent = sum(1 for i in intervals if abs(i - med) <= max(3, 0.35 * med))
+        if consistent / len(intervals) < 0.5:
+            continue
+        amounts = [r[1] for r in rows]
+        avg_amount = sum(amounts) / len(amounts)
+        per_month = 30.44 / med
+        last = max(dates)
+        out.append(Recurring(
+            keyword=kw, cadence=cadence, count=len(rows), avg_amount=avg_amount,
+            last_date=last, next_estimate=last + timedelta(days=round(med)),
+            monthly_amount=avg_amount * per_month, category=rows[-1][2],
+        ))
+    out.sort(key=lambda r: r.monthly_amount, reverse=True)
+    total_monthly = sum(r.monthly_amount for r in out)
+    return out, total_monthly
 
 
 def distinct_sub_categories(db: Database, category: Optional[str] = None) -> list[str]:
