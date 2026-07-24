@@ -43,6 +43,10 @@ class MainWindow(QMainWindow):
         self._rules.changed.connect(self._dashboard.mark_dirty)
         self._rules.changed.connect(self._view.refresh)
         self._rules.changed.connect(self._update_status)
+        # A per-transaction edit/delete changes totals everywhere.
+        self._dashboard.changed.connect(self._view.refresh)
+        self._dashboard.changed.connect(self._recurring.refresh)
+        self._dashboard.changed.connect(self._update_status)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._dashboard, "Dashboard")
@@ -128,7 +132,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Import failed", str(exc))
             return
         self._refresh_after_import()
-        QMessageBox.information(self, "Import complete", result.summary())
+        box = QMessageBox.warning if result.has_problems else QMessageBox.information
+        box(self, "Import complete", result.summary())
 
     def _download_template(self) -> None:
         """Save a blank standard template for the user to fill in."""

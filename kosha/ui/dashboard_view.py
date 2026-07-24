@@ -13,7 +13,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt, QUrl
+from PySide6.QtCore import QDate, Qt, QUrl, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDateEdit, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
@@ -24,9 +24,12 @@ from .. import analytics, categorization, charts
 from ..db import Database
 from ..format import format_inr
 from .uihelp import autosize as _autosize, fit_columns as _fit_columns
+from .widgets import CheckableComboBox
 
 
 class DashboardView(QWidget):
+    changed = Signal()          # emitted after a transaction edit/delete
+
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
         self._db = db
@@ -77,12 +80,16 @@ class DashboardView(QWidget):
         self._web = self._make_web_view()
         splitter.addWidget(self._web)
 
-        self._table = QTableWidget(0, 10)
+        self._table = QTableWidget(0, 11)
         self._table.setHorizontalHeaderLabels(
             ["Date", "Description", "Amount", "Dir", "Type", "Source",
-             "Keyword", "Category", "Sub-category", "Tag"]
+             "Keyword", "Category", "Sub-category", "Tag", "Note"]
         )
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self._table.setToolTip("Double-click a row to edit; select several to edit them together")
+        self._table.doubleClicked.connect(self._on_edit_txn)
         self._table.verticalHeader().setVisible(False)
         _fit_columns(self._table, stretch_col=1)     # Description flexes; rest fit content
 
@@ -136,11 +143,14 @@ class DashboardView(QWidget):
         self._sub_category = QComboBox()   # 'All' + sub-categories of the chosen category
         self._sub_category.addItem("All sub-categories", None)
 
+        self._tags = CheckableComboBox("All tags")   # multi-select
+        self._tags.setMinimumWidth(140)
+
         self._source = QComboBox()   # 'All' + each account (id in userData)
         self._source.addItem("All sources", None)
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Search description / keyword / amount…")
+        self._search.setPlaceholderText("Search anything — description, keyword, category, tag, source, note, amount…")
         self._search.setClearButtonEnabled(True)
         self._search.returnPressed.connect(self.refresh)
 
@@ -152,6 +162,7 @@ class DashboardView(QWidget):
         bar.addWidget(QLabel("By")); bar.addWidget(self._granularity)
         bar.addWidget(self._category)
         bar.addWidget(self._sub_category)
+        bar.addWidget(self._tags)
         bar.addWidget(self._source)
         bar.addWidget(self._search, stretch=1)
         bar.addWidget(apply_btn)
@@ -167,6 +178,11 @@ class DashboardView(QWidget):
         self._end.setDate(QDate(end.year, end.month, end.day))
         self._reload_categories()
         self._reload_sources()
+        self._reload_tags()
+
+    def _reload_tags(self) -> None:
+        # set_items keeps any still-present checked tags selected.
+        self._tags.set_items(analytics.distinct_tags(self._db))
 
     def _reload_sources(self) -> None:
         current = self._source.currentData()
@@ -223,6 +239,7 @@ class DashboardView(QWidget):
             end=date(e.year(), e.month(), e.day()),
             categories=categories,
             sub_categories=sub_categories,
+            tags=tuple(self._tags.checked_items()),
             account_ids=account_ids,
             search=self._search.text().strip(),
         )
@@ -241,12 +258,14 @@ class DashboardView(QWidget):
             charts.income_expense_line(analytics.income_expense_savings(self._db, flt, gran), tmpl),
             charts.spend_stacked_bar(analytics.spend_by_period_subcategory(self._db, flt, gran), gran, tmpl),
             charts.category_pie(analytics.subcategory_totals(self._db, flt, "Expense"), "Expense share by sub-category", tmpl),
+            charts.spend_stacked_bar(analytics.spend_by_period_tag(self._db, flt, gran), gran, tmpl, label="tag"),
             charts.top_merchants_bar(analytics.top_merchants(self._db, flt), tmpl),
         ]
         return charts.dashboard_html(figs, dark=False, plotlyjs=self._plotlyjs)
 
     def refresh(self) -> None:
         self._dirty = False
+        self._reload_tags()          # keep the tag filter current as tags change
         self._render(self.build_html())
         self._load_stats()
         self._load_table()
@@ -282,18 +301,40 @@ class DashboardView(QWidget):
         rows = analytics.transactions(self._db, self.current_filter())
         self._table.setRowCount(len(rows))
         for r, (txn_date, desc, amount, direction, txn_type, source, keyword,
-                category, sub, tag) in enumerate(rows):
+                category, sub, tag, note, txn_id) in enumerate(rows):
             cells = [
                 txn_date, desc, format_inr(amount), direction, txn_type or "",
                 source or "", keyword or "", categorization.display_label(category),
-                sub or "", tag or "",
+                sub or "", tag or "", note or "",
             ]
             for c, val in enumerate(cells):
                 item = QTableWidgetItem(str(val))
                 if c == 2:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if c == 0:
+                    item.setData(Qt.UserRole, txn_id)     # remember which row is which txn
                 self._table.setItem(r, c, item)
         _autosize(self._table)
+
+    def _selected_txn_ids(self) -> list[int]:
+        rows = sorted({i.row() for i in self._table.selectedItems()})
+        ids = []
+        for r in rows:
+            item = self._table.item(r, 0)
+            if item is not None and item.data(Qt.UserRole) is not None:
+                ids.append(int(item.data(Qt.UserRole)))
+        return ids
+
+    def _on_edit_txn(self, *_args) -> None:
+        ids = self._selected_txn_ids()
+        if not ids:
+            return
+        from .transaction_editor import TransactionEditor
+        dlg = TransactionEditor(self._db, ids, self)
+        dlg.exec()
+        if dlg.changed:          # set only when an edit/delete was applied
+            self.refresh()
+            self.changed.emit()
 
 
 def _months_back(d: date, months: int) -> date:

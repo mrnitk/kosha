@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     sub_category_override TEXT,
     tag_override          TEXT,                -- manual per-txn tag; NULL = inherit rule
     excluded_override     INTEGER,             -- manual per-txn exclude; NULL = inherit rule
+    note                  TEXT,                -- free-form per-transaction note
     import_batch_id       INTEGER REFERENCES import_batches(id),
     dedup_hash            TEXT UNIQUE          -- hash(date+amount+norm desc+account)
 );
@@ -91,6 +92,7 @@ SELECT
     t.id, t.txn_date, t.raw_description, t.amount, t.direction,
     t.account_id, t.txn_type, t.merchant_keyword,
     t.category_override, t.sub_category_override,
+    t.tag_override, t.excluded_override,
     t.import_batch_id, t.dedup_hash,
     COALESCE(
         t.category_override,
@@ -100,6 +102,7 @@ SELECT
     COALESCE(t.sub_category_override, br.sub_category) AS effective_sub_category,
     COALESCE(t.tag_override, br.tag) AS effective_tag,
     COALESCE(t.excluded_override, br.excluded, 0) AS effective_excluded,
+    t.note AS note,
     a.name AS account_name,          -- 'source': which bank/card the txn came from
     a.account_type AS account_type   -- 'bank' | 'credit_card'
 FROM transactions t

@@ -149,7 +149,7 @@ class CategorizationView(QWidget):
         form.addRow("Sub-category:", self._sub_category)
 
         self._tag = QLineEdit()
-        self._tag.setPlaceholderText("optional, e.g. reimbursable, trip-goa")
+        self._tag.setPlaceholderText("optional, comma-separated e.g. reimbursable, trip-goa")
         self._tag_completer = QCompleter([])
         self._tag_completer.setCaseSensitivity(Qt.CaseInsensitive)
         self._tag.setCompleter(self._tag_completer)
@@ -346,7 +346,8 @@ class CategorizationView(QWidget):
         from .merge_dialog import MergeKeywordsDialog
         preselect = [ks.keyword for ks in self.selected_rows()]
         dlg = MergeKeywordsDialog(self._db, preselect=preselect, parent=self)
-        if dlg.exec() == dlg.Accepted and dlg.merged:
+        dlg.exec()
+        if dlg.merged:           # set only when a merge was applied
             self.refresh()
             self.changed.emit()
 

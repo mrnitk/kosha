@@ -78,8 +78,9 @@ def _frame(fig: go.Figure) -> go.Figure:
     return fig
 
 
-def spend_stacked_bar(rows, granularity: str = "month", template: str = "plotly_white") -> go.Figure:
-    """Stacked bar of expense per period, one trace per sub-category."""
+def spend_stacked_bar(rows, granularity: str = "month", template: str = "plotly_white",
+                      label: str = "sub-category") -> go.Figure:
+    """Stacked bar of expense per period, one trace per ``label`` (sub-category/tag)."""
     periods = sorted({r[0] for r in rows})
     labels = [prettify_period(p) for p in periods]
     subs = sorted({r[1] for r in rows})
@@ -93,7 +94,7 @@ def spend_stacked_bar(rows, granularity: str = "month", template: str = "plotly_
         y = [by_sub[sub][p] for p in periods]
         fig.add_bar(name=sub, x=labels, y=y, marker_color=cmap[sub], **_inr_hover(y, sub))
     fig.update_layout(**_layout(
-        f"Expense by sub-category ({granularity})", template, barmode="stack",
+        f"Expense by {label} ({granularity})", template, barmode="stack",
         xaxis=dict(categoryorder="array", categoryarray=labels),
     ))
     fig.update_yaxes(title="Amount (₹)")

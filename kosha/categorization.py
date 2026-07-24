@@ -156,7 +156,7 @@ def add_rule(
     category = normalize_category(category)
     direction = normalize_direction(direction)
     sub_category = sub_category.strip() if sub_category and sub_category.strip() else None
-    tag = tag.strip() if tag and tag.strip() else None
+    tag = normalize_tags(tag)
     exc = 1 if excluded else 0
 
     con = db.connection
@@ -195,7 +195,7 @@ def assign_many(
     category = normalize_category(category)
     direction = normalize_direction(direction)
     sub = sub_category.strip() if sub_category and sub_category.strip() else None
-    tag = tag.strip() if tag and tag.strip() else None
+    tag = normalize_tags(tag)
     exc = 1 if excluded else 0
     con = db.connection
     count = 0
@@ -319,7 +319,7 @@ def edit_rule(
     category = normalize_category(category)
     direction = normalize_direction(direction)
     sub = sub_category.strip() if sub_category and sub_category.strip() else None
-    tag = tag.strip() if tag and tag.strip() else None
+    tag = normalize_tags(tag)
     exc = 1 if excluded else 0
     con = db.connection
     try:
@@ -451,6 +451,76 @@ def set_excluded(db: Database, txn_id: int, excluded: Optional[bool]) -> None:
     con.commit()
 
 
+# --- per-transaction editing -------------------------------------------------
+
+def get_transaction(db: Database, txn_id: int) -> Optional[dict]:
+    """Current stored + resolved values for one transaction (for the editor)."""
+    row = db.connection.execute(
+        """
+        SELECT id, txn_date, raw_description, amount, direction, merchant_keyword,
+               category_override, sub_category_override, tag_override,
+               excluded_override, note,
+               effective_category, effective_sub_category, effective_tag, account_name
+        FROM v_transactions_resolved WHERE id=?
+        """, (txn_id,),
+    ).fetchone()
+    if not row:
+        return None
+    keys = ("id", "txn_date", "raw_description", "amount", "direction", "merchant_keyword",
+            "category_override", "sub_category_override", "tag_override",
+            "excluded_override", "note",
+            "effective_category", "effective_sub_category", "effective_tag", "account_name")
+    return dict(zip(keys, row))
+
+
+def set_transaction_overrides(
+    db: Database,
+    txn_ids: list[int],
+    *,
+    category: Optional[str] = None,       # None = inherit rule/default
+    sub_category: Optional[str] = None,
+    tag: Optional[str] = None,
+    excluded: Optional[bool] = None,      # None = inherit rule
+    note: Optional[str] = None,
+    set_note: bool = False,               # only touch note when True (bulk-safe)
+) -> None:
+    """Set per-transaction overrides on one or many transactions.
+
+    Each field's ``None`` clears that override so the transaction falls back to
+    its keyword rule. ``note`` is only written when ``set_note`` is True (so a
+    bulk category edit doesn't wipe individual notes).
+    """
+    if not txn_ids:
+        return
+    cat_val = normalize_category(category) if category else None
+    sub_val = sub_category.strip() if sub_category and sub_category.strip() else None
+    tag_val = normalize_tags(tag)
+    exc_val = None if excluded is None else (1 if excluded else 0)
+    sets = ["category_override=?", "sub_category_override=?", "tag_override=?", "excluded_override=?"]
+    params: list = [cat_val, sub_val, tag_val, exc_val]
+    if set_note:
+        sets.append("note=?")
+        params.append(note.strip() if note and note.strip() else None)
+    con = db.connection
+    marks = ",".join("?" * len(txn_ids))
+    con.execute(
+        f"UPDATE transactions SET {', '.join(sets)} WHERE id IN ({marks})",
+        [*params, *txn_ids],
+    )
+    con.commit()
+
+
+def delete_transactions(db: Database, txn_ids: list[int]) -> int:
+    """Permanently delete transactions by id. Returns the number removed."""
+    if not txn_ids:
+        return 0
+    con = db.connection
+    marks = ",".join("?" * len(txn_ids))
+    cur = con.execute(f"DELETE FROM transactions WHERE id IN ({marks})", list(txn_ids))
+    con.commit()
+    return cur.rowcount or 0
+
+
 # --- review queries ----------------------------------------------------------
 
 def unreviewed_keywords(db: Database) -> list[KeywordSpend]:
@@ -572,14 +642,41 @@ def distinct_sub_categories(db: Database) -> list[str]:
     return [r[0] for r in rows]
 
 
+def split_tags(text: Optional[str]) -> list[str]:
+    """Parse a comma/semicolon-separated tag string into individual trimmed tags.
+
+    A transaction (or rule) can carry several tags in one field, e.g.
+    ``"reimbursable, trip-goa"``.
+    """
+    if not text:
+        return []
+    parts = text.replace(";", ",").split(",")
+    seen, out = set(), []
+    for p in parts:
+        t = p.strip()
+        key = t.lower()
+        if t and key not in seen:
+            seen.add(key)
+            out.append(t)
+    return out
+
+
+def normalize_tags(text: Optional[str]) -> Optional[str]:
+    """Canonical comma-separated form of a multi-tag string (or None if empty)."""
+    tags = split_tags(text)
+    return ", ".join(tags) if tags else None
+
+
 def distinct_tags(db: Database) -> list[str]:
-    """Tags already in use, for autocomplete."""
+    """Individual tags already in use, for autocomplete (multi-tag aware)."""
     rows = db.connection.execute(
         """
         SELECT tag FROM category_rules WHERE tag IS NOT NULL
         UNION
         SELECT tag_override FROM transactions WHERE tag_override IS NOT NULL
-        ORDER BY 1
         """
     ).fetchall()
-    return [r[0] for r in rows]
+    tags = set()
+    for (value,) in rows:
+        tags.update(split_tags(value))
+    return sorted(tags, key=str.lower)

@@ -12,7 +12,7 @@ half-written batch.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import features
@@ -124,6 +124,7 @@ class TemplateResult:
     """Aggregate outcome of a standard-template import (possibly many sources)."""
 
     per_source: list[tuple[str, ImportResult]]
+    problems: list[str] = field(default_factory=list)   # rows skipped by validation
 
     @property
     def total_parsed(self) -> int:
@@ -137,8 +138,12 @@ class TemplateResult:
     def total_skipped(self) -> int:
         return sum(r.skipped_duplicates for _s, r in self.per_source)
 
+    @property
+    def has_problems(self) -> bool:
+        return bool(self.problems)
+
     def summary(self) -> str:
-        if not self.per_source:
+        if not self.per_source and not self.problems:
             return "No transactions found in the template."
         lines = [
             f"Imported {self.total_inserted} new transaction(s), "
@@ -147,6 +152,12 @@ class TemplateResult:
         if len(self.per_source) > 1:
             for source, r in self.per_source:
                 lines.append(f"  • {source}: {r.inserted} new, {r.skipped_duplicates} skipped")
+        if self.problems:
+            lines.append("")
+            lines.append(f"⚠ {len(self.problems)} row(s) were skipped due to problems:")
+            lines.extend(f"  • {p}" for p in self.problems[:15])
+            if len(self.problems) > 15:
+                lines.append(f"  … and {len(self.problems) - 15} more")
         return "\n".join(lines)
 
 
@@ -156,7 +167,7 @@ def import_template(db: Database, path) -> TemplateResult:
 
     from . import template_import
     path = Path(path)
-    records = template_import.read_template(path)
+    records, problems = template_import.read_template(path)
 
     groups: "OrderedDict[tuple[str, str], list]" = OrderedDict()
     for raw, source, account_type in records:
@@ -170,7 +181,7 @@ def import_template(db: Database, path) -> TemplateResult:
             force_card=(account_type == "credit_card"),
         )
         results.append((source, res))
-    return TemplateResult(per_source=results)
+    return TemplateResult(per_source=results, problems=problems)
 
 
 def detect_parser(path) -> BaseParser | None:

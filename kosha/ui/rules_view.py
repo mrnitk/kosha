@@ -91,7 +91,7 @@ class RulesView(QWidget):
         form.addRow("Sub-category:", self._sub_category)
 
         self._tag = QLineEdit()
-        self._tag.setPlaceholderText("optional, e.g. reimbursable, trip-goa")
+        self._tag.setPlaceholderText("optional, comma-separated e.g. reimbursable, trip-goa")
         form.addRow("Tag:", self._tag)
 
         self._excluded = QCheckBox("Exclude from all visuals and the table")

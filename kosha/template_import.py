@@ -121,36 +121,57 @@ def _cell(row: list[str], idx: Optional[int]) -> str:
 
 def _account_type(type_text: str, source: str) -> str:
     hint = f"{type_text} {source}".lower()
+    if "cash" in hint:
+        return "cash"
     if "credit" in hint or "card" in hint:
         return "credit_card"
     return "bank"
 
 
-def read_template(path) -> list[tuple[RawTransaction, str, str]]:
-    """Read a filled template into (RawTransaction, source_name, account_type) rows.
+def read_template(path) -> tuple[list[tuple[RawTransaction, str, str]], list[str]]:
+    """Read a filled template into records + a list of problem descriptions.
 
-    Rows without a parseable date or a debit/credit amount are skipped.
+    Returns ``(records, problems)`` where each record is
+    ``(RawTransaction, source_name, account_type)``. A row is *skipped and
+    reported* when it fails validation:
+
+      * a **negative** Debit or Credit,
+      * **both** a Debit and a Credit (a transaction is one or the other).
+
+    Rows with no parseable date (headers, footers, blank lines) or no amount at
+    all are skipped silently.
     """
     rows = tabular.read_table(path)
     hidx, cols = _find_header_row(rows)
     out: list[tuple[RawTransaction, str, str]] = []
-    for row in rows[hidx + 1:]:
+    problems: list[str] = []
+    for idx in range(hidx + 1, len(rows)):
+        row = rows[idx]
+        sheet_row = idx + 1                      # 1-based, as shown in Excel
         txn_date = parse_date(_cell(row, cols["date"]))
         if txn_date is None:
             continue
         debit = parse_amount(_cell(row, cols.get("debit")))
         credit = parse_amount(_cell(row, cols.get("credit")))
+        if debit < 0 or credit < 0:
+            problems.append(f"row {sheet_row}: negative amount — skipped")
+            continue
+        if debit > 0 and credit > 0:
+            problems.append(
+                f"row {sheet_row}: has both a Debit and a Credit — skipped "
+                "(a transaction must be one or the other)")
+            continue
         if debit > 0:
             amount, direction = debit, "debit"
         elif credit > 0:
             amount, direction = credit, "credit"
         else:
-            continue
+            continue                             # no amount → footer/blank
         remarks = _cell(row, cols.get("remarks")).strip() or "(no description)"
         source = _cell(row, cols.get("source")).strip() or "Imported"
         atype = _account_type(_cell(row, cols.get("account_type")), source)
         out.append((RawTransaction(txn_date, remarks, amount, direction), source, atype))
-    return out
+    return out, problems
 
 
 # --- blank template generation -----------------------------------------------
@@ -182,7 +203,8 @@ def write_template(path) -> None:
         ["  Debit", "amount that left the account (leave blank for credits)"],
         ["  Credit", "amount that came in (leave blank for debits)"],
         ["  Source", "optional. account/bank name, e.g. HDFC Bank, SBI Savings, Axis Card"],
-        ["  Account Type", "optional. Bank or Credit Card (guessed from Source if blank)"],
+        ["  Account Type", "optional. Bank, Credit Card, or Cash (guessed from Source if blank)"],
+        ["", "Tip: for cash spends, set Source or Account Type to 'Cash'."],
         [""],
         ["Each row needs a Date and either a Debit or a Credit amount."],
         ["One file can mix multiple accounts — just set Source per row."],

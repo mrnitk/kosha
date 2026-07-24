@@ -329,6 +329,37 @@ def test_main_window_has_recurring_tab_and_backup(tmp_path):
     win.close()
 
 
+def test_dashboard_edit_deletes_and_refreshes(tmp_path, monkeypatch):
+    # Regression: a per-txn delete must refresh the table. The bug was
+    # `dlg.exec() == dlg.Accepted` crashing on instance enum access in PySide6,
+    # so refresh() never ran and the deleted row stayed on screen.
+    from kosha.ui.dashboard_view import DashboardView
+    from kosha import categorization as cat
+    import kosha.ui.transaction_editor as te
+    db = _make_db(tmp_path)
+    dash = DashboardView(db)
+    before = dash._table.rowCount()
+    assert before >= 1
+    target_id = dash._table.item(0, 0).data(256)     # Qt.UserRole
+
+    class _FakeEditor:
+        def __init__(self, db, ids, parent=None):
+            self._db, self._ids = db, ids
+            self.changed = False
+        def exec(self):
+            cat.delete_transactions(self._db, self._ids)   # what Delete does
+            self.changed = True
+            return 1
+    monkeypatch.setattr(te, "TransactionEditor", _FakeEditor)
+
+    dash._table.selectRow(0)
+    dash._on_edit_txn()
+    assert dash._table.rowCount() == before - 1
+    ids_now = [dash._table.item(r, 0).data(256) for r in range(dash._table.rowCount())]
+    assert target_id not in ids_now
+    db.lock()
+
+
 def test_dashboard_has_search_box(tmp_path):
     from kosha.ui.dashboard_view import DashboardView
     db = _make_db(tmp_path)

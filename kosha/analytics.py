@@ -31,6 +31,7 @@ class Filter:
     end: Optional[date] = None
     categories: tuple[str, ...] = field(default_factory=tuple)
     sub_categories: tuple[str, ...] = field(default_factory=tuple)
+    tags: tuple[str, ...] = field(default_factory=tuple)
     account_ids: tuple[int, ...] = field(default_factory=tuple)
     include_excluded: bool = False
     search: str = ""
@@ -51,16 +52,33 @@ class Filter:
             marks = ",".join("?" * len(self.sub_categories))
             clauses.append(f"COALESCE({p}effective_sub_category, 'Unassigned') IN ({marks})")
             params.extend(self.sub_categories)
+        if self.tags:
+            # Tags are stored comma-separated ("a, b"); match a whole tag on
+            # comma boundaries so 'goa' doesn't match 'goat'. A txn matches if it
+            # carries ANY selected tag.
+            ors = []
+            for t in self.tags:
+                ors.append(f"(', ' || COALESCE({p}effective_tag, '') || ', ') LIKE ?")
+                params.append(f"%, {t}, %")
+            clauses.append("(" + " OR ".join(ors) + ")")
         if self.account_ids:
             marks = ",".join("?" * len(self.account_ids))
             clauses.append(f"{p}account_id IN ({marks})")
             params.extend(self.account_ids)
         if self.search and self.search.strip():
             like = f"%{self.search.strip()}%"
-            clauses.append(
-                f"({p}raw_description LIKE ? OR {p}merchant_keyword LIKE ? "
-                f"OR CAST({p}amount AS TEXT) LIKE ?)")
-            params.extend([like, like, like])
+            searchable = [
+                f"COALESCE({p}raw_description, '')",
+                f"COALESCE({p}merchant_keyword, '')",
+                f"COALESCE({p}effective_category, '')",
+                f"COALESCE({p}effective_sub_category, '')",
+                f"COALESCE({p}effective_tag, '')",
+                f"COALESCE({p}account_name, '')",
+                f"COALESCE({p}note, '')",
+                f"CAST({p}amount AS TEXT)",
+            ]
+            clauses.append("(" + " OR ".join(f"{s} LIKE ?" for s in searchable) + ")")
+            params.extend([like] * len(searchable))
         if not self.include_excluded:
             clauses.append(f"COALESCE({p}effective_excluded, 0) = 0")
         return (" AND ".join(clauses) if clauses else "1=1"), params
@@ -155,6 +173,60 @@ def spend_by_period_subcategory(db: Database, flt: Filter, granularity: str = "m
     return db.connection.execute(sql, params).fetchall()
 
 
+def spend_by_period_tag(db: Database, flt: Filter, granularity: str = "month"):
+    """Rows (period, tag, total) for Expense, exploding comma-separated tags.
+
+    A transaction with several tags contributes its full amount to each tag (tags
+    overlap, unlike sub-categories), so per-tag totals can sum to more than total
+    expense. Untagged expense is bucketed as 'Untagged'.
+    """
+    from .categorization import split_tags
+    where, params = flt.where()
+    period = _period_expr(granularity)
+    sql = f"""
+        SELECT {period} AS period, effective_tag, amount
+        FROM v_transactions_resolved
+        WHERE effective_category='Expense' AND {where}
+    """
+    agg: dict[tuple[str, str], float] = {}
+    for prd, tagstr, amount in db.connection.execute(sql, params).fetchall():
+        for tag in (split_tags(tagstr) or ["Untagged"]):
+            agg[(prd, tag)] = agg.get((prd, tag), 0.0) + amount
+    return [(prd, tag, total) for (prd, tag), total in sorted(agg.items())]
+
+
+def tag_totals(db: Database, flt: Filter):
+    """Rows (tag, total, count) for Expense, exploding comma-separated tags."""
+    from .categorization import split_tags
+    where, params = flt.where()
+    sql = f"""
+        SELECT effective_tag, amount FROM v_transactions_resolved
+        WHERE effective_category='Expense' AND {where}
+    """
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for tagstr, amount in db.connection.execute(sql, params).fetchall():
+        for tag in (split_tags(tagstr) or ["Untagged"]):
+            totals[tag] = totals.get(tag, 0.0) + amount
+            counts[tag] = counts.get(tag, 0) + 1
+    rows = [(tag, totals[tag], counts[tag]) for tag in totals]
+    rows.sort(key=lambda r: r[1], reverse=True)
+    return rows
+
+
+def distinct_tags(db: Database) -> list[str]:
+    """Individual tags present in the data, for the filter (multi-tag aware)."""
+    from .categorization import split_tags
+    rows = db.connection.execute(
+        "SELECT DISTINCT effective_tag FROM v_transactions_resolved "
+        "WHERE effective_tag IS NOT NULL AND effective_tag<>''"
+    ).fetchall()
+    tags = set()
+    for (value,) in rows:
+        tags.update(split_tags(value))
+    return sorted(tags, key=str.lower)
+
+
 def subcategory_totals(db: Database, flt: Filter, category: str = "Expense"):
     """Rows (sub_category, total, count) within a category — feeds the donut."""
     where, params = flt.where()
@@ -204,14 +276,15 @@ def transactions(db: Database, flt: Filter, limit: int = 500):
     """Detail rows for drill-down, newest first.
 
     Columns: date, description, amount, direction, txn_type, source
-    (account name), keyword, category, sub_category, tag.
+    (account name), keyword, category, sub_category, tag, note, id.
+    (``note`` and ``id`` are appended so earlier column indices stay stable.)
     """
     where, params = flt.where()
     sql = f"""
         SELECT txn_date, raw_description, amount, direction, txn_type,
                account_name, COALESCE(merchant_keyword, '') AS keyword,
                effective_category, COALESCE(effective_sub_category, '') AS sub,
-               COALESCE(effective_tag, '') AS tag
+               COALESCE(effective_tag, '') AS tag, COALESCE(note, '') AS note, id
         FROM v_transactions_resolved
         WHERE {where}
         ORDER BY txn_date DESC, id DESC

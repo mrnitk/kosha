@@ -52,8 +52,8 @@ def test_read_template_basic(tmp_path):
         "06/04/2026,Salary,,60000,HDFC Bank,Bank\n"
         "Closing balance,,,,,\n"                       # no date -> skipped
     ))
-    recs = ti.read_template(p)
-    assert len(recs) == 2
+    recs, problems = ti.read_template(p)
+    assert len(recs) == 2 and problems == []
     (raw0, src0, type0) = recs[0]
     assert raw0.direction == "debit" and raw0.amount == 300 and raw0.raw_description == "UPI SWIGGY"
     assert src0 == "HDFC Bank" and type0 == "bank"
@@ -68,7 +68,7 @@ def test_header_aliases_and_metadata_rows(tmp_path):
         "Txn Date,Narration,Withdrawal,Deposit\n"
         "05/04/2026,SWIGGY,300,\n"
     ))
-    recs = ti.read_template(p)
+    recs, _ = ti.read_template(p)
     assert len(recs) == 1 and recs[0][0].amount == 300
     assert recs[0][1] == "Imported"                    # no Source column -> default
 
@@ -78,7 +78,7 @@ def test_account_type_inferred_from_source(tmp_path):
         "Date,Transaction Remarks,Debit,Credit,Source\n"
         "05/04/2026,AMAZON,1000,,HDFC Credit Card\n"
     ))
-    _raw, _src, atype = ti.read_template(p)[0]
+    _raw, _src, atype = ti.read_template(p)[0][0]
     assert atype == "credit_card"
 
 
@@ -86,6 +86,40 @@ def test_missing_headers_raises(tmp_path):
     p = _csv(tmp_path / "t.csv", "foo,bar,baz\n1,2,3\n")
     with pytest.raises(ti.TemplateError):
         ti.read_template(p)
+
+
+def test_row_with_both_debit_and_credit_is_rejected(tmp_path):
+    p = _csv(tmp_path / "t.csv", (
+        "Date,Transaction Remarks,Debit,Credit,Source\n"
+        "05/04/2026,BOTH,8168,4580,HDFC\n"          # both -> skipped + reported
+        "06/04/2026,OK,300,,HDFC\n"
+    ))
+    recs, problems = ti.read_template(p)
+    assert len(recs) == 1 and recs[0][0].raw_description == "OK"
+    assert len(problems) == 1 and "both" in problems[0].lower() and "row 2" in problems[0]
+
+
+def test_negative_amount_rejected(tmp_path):
+    p = _csv(tmp_path / "t.csv", (
+        "Date,Transaction Remarks,Debit,Credit,Source\n"
+        "05/04/2026,NEG,-500,,HDFC\n"
+        "06/04/2026,OK,,700,HDFC\n"
+    ))
+    recs, problems = ti.read_template(p)
+    assert len(recs) == 1 and recs[0][0].raw_description == "OK"
+    assert len(problems) == 1 and "negative" in problems[0].lower()
+
+
+def test_import_template_reports_problems(tmp_path, db):
+    p = _csv(tmp_path / "t.csv", (
+        "Date,Transaction Remarks,Debit,Credit,Source\n"
+        "05/04/2026,BOTH,100,200,HDFC\n"
+        "06/04/2026,GOOD,300,,HDFC\n"
+    ))
+    result = importer.import_template(db, p)
+    assert result.total_inserted == 1
+    assert result.has_problems and len(result.problems) == 1
+    assert "both" in result.summary().lower()
 
 
 # --- import end to end -------------------------------------------------------
@@ -124,7 +158,7 @@ def test_write_template_is_readable(tmp_path, db):
     ti.write_template(out)
     assert out.exists()
     # Blank template has headers but no data rows -> zero transactions, no error.
-    assert ti.read_template(out) == []
+    assert ti.read_template(out)[0] == []
     import openpyxl
     wb = openpyxl.load_workbook(out)
     assert wb.sheetnames[0] == "Transactions"

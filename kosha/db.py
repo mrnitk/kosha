@@ -20,7 +20,7 @@ import sqlcipher3
 
 from . import config, crypto, features
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class WrongPasswordError(Exception):
@@ -182,6 +182,8 @@ class Database:
                 self._migrate_to_v7(con)
             if current < 9:
                 self._migrate_to_v9(con)
+            if current < 10:
+                self._migrate_to_v10(con)
             con.executescript(_load_schema_sql())
             if current < 3:
                 self._migrate_to_v3(con)
@@ -244,6 +246,12 @@ class Database:
             con.execute("ALTER TABLE transactions ADD COLUMN tag_override TEXT")
         if not _has_column(con, "category_rules", "tag"):
             con.execute("ALTER TABLE category_rules ADD COLUMN tag TEXT")
+
+    @staticmethod
+    def _migrate_to_v10(con: sqlcipher3.Connection) -> None:
+        """Add ``transactions.note`` for per-transaction notes."""
+        if not _has_column(con, "transactions", "note"):
+            con.execute("ALTER TABLE transactions ADD COLUMN note TEXT")
 
     @staticmethod
     def _migrate_to_v3(con: sqlcipher3.Connection) -> None:
