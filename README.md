@@ -42,12 +42,31 @@ Built for Indian bank statements (UPI / NEFT / IMPS / cards / SI mandates) and
   **global search** across description / keyword / amount.
 - Monthly **average / min / max** stats, and a drill-down transaction table.
 
+**Net worth**
+- Track **assets** (bank, stocks, mutual funds, PF, NPS …) and **liabilities**
+  (home/car/personal loans, credit-card outstanding) as dated **snapshots** —
+  net worth is assets − liabilities on each date.
+- **Trend over time** with growth per snapshot and overall, **allocation** by
+  liquidity / type / owner / category, **invested vs current** gains, total
+  **monthly EMI** and **debt-to-asset** ratio.
+- Bring your spreadsheet history in one go: the **net-worth template** takes one
+  row per holding and one column per date (`Jun'26`, `2026-06`, …). Export
+  round-trips, so it doubles as a readable backup.
+- **Insurance** policies tracked for premium/cover — never counted as assets.
+
 **More**
 - **Recurring / subscriptions** detection — surfaces regular payments (SIPs,
   EMIs, rent, subscriptions) with cadence, next-date estimate, and your total
   **monthly committed outflow**.
 - **Encrypted backup & restore** of the whole vault (a password-protected copy).
 - Consistent light theme; Indian number formatting (`3,00,000`).
+
+**Security**
+- **Change master password** any time (re-keys the vault and adopts the current
+  Argon2 settings), with a strength meter.
+- **Auto-lock** after idle, **Lock now** (`Ctrl+L`), and a **privacy mask**
+  (`Ctrl+H`) that hides every amount on screen, charts included.
+- **Failed-attempt backoff** that survives restarting the app.
 
 ---
 

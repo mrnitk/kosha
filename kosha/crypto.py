@@ -25,9 +25,18 @@ SALT_BYTES = 16
 
 @dataclass(frozen=True)
 class Argon2Params:
-    """Argon2id cost parameters. Defaults target ~roughly a desktop unlock."""
+    """Argon2id cost parameters.
 
-    time_cost: int = 3
+    The defaults are deliberately well above the OWASP baseline (19 MiB / t=2):
+    256 MiB of memory makes GPU/ASIC cracking expensive, and t=4 adds time margin
+    at a cost of roughly a second on a desktop — paid once per unlock.
+
+    Each vault stores the parameters it was created with (in the salt file), so
+    raising these defaults never breaks an existing vault; a vault adopts the
+    current defaults when its password is next changed.
+    """
+
+    time_cost: int = 4
     memory_cost: int = 262144  # KiB == 256 MiB
     parallelism: int = 4
 

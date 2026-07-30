@@ -20,7 +20,7 @@ import sqlcipher3
 
 from . import config, crypto, features
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class WrongPasswordError(Exception):
@@ -127,20 +127,31 @@ class Database:
             self._con.close()
             self._con = None
 
-    def change_password(self, old_password: str, new_password: str) -> None:
-        """Re-key the database in place using SQLCipher's ``PRAGMA rekey``."""
+    def change_password(
+        self,
+        old_password: str,
+        new_password: str,
+        params: Optional[crypto.Argon2Params] = None,
+    ) -> None:
+        """Re-key the database in place using SQLCipher's ``PRAGMA rekey``.
+
+        A fresh salt is generated and — unless ``params`` says otherwise — the
+        *current* Argon2 defaults are adopted, so changing the password is also how
+        an older vault picks up strengthened key-derivation settings.
+        """
         self._require_unlocked()
-        # Verify the old password matches what unlocked us before re-keying.
-        salt, params = crypto.read_salt_file(self._salt_path)
-        if crypto.derive_key(old_password, salt, params) != self._current_key:
+        # Verify the old password against the parameters the vault was made with.
+        old_salt, old_params = crypto.read_salt_file(self._salt_path)
+        if crypto.derive_key(old_password, old_salt, old_params) != self._current_key:
             raise WrongPasswordError("old password does not match")
 
+        new_params = params or crypto.Argon2Params()
         new_salt = crypto.new_salt()
-        new_key = crypto.derive_key(new_password, new_salt, params)
+        new_key = crypto.derive_key(new_password, new_salt, new_params)
         pragma = crypto.key_to_sqlcipher_pragma(new_key)
         self._con.execute(f"PRAGMA rekey = {pragma}")
         self._con.commit()
-        crypto.write_salt_file(self._salt_path, new_salt, params)
+        crypto.write_salt_file(self._salt_path, new_salt, new_params)
         self._current_key = new_key
 
     # --- access --------------------------------------------------------------
@@ -184,6 +195,10 @@ class Database:
                 self._migrate_to_v9(con)
             if current < 10:
                 self._migrate_to_v10(con)
+            # v11 adds only new tables (net-worth: assets, liabilities,
+            # valuations, insurance, app_settings) — the CREATE TABLE IF NOT
+            # EXISTS statements below add them, so no dedicated migration is
+            # needed and existing expense data is untouched.
             con.executescript(_load_schema_sql())
             if current < 3:
                 self._migrate_to_v3(con)
