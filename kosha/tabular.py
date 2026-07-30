@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 from datetime import date, datetime
 from pathlib import Path
+from typing import Optional
 
 CSV_SUFFIXES = {".csv", ".tsv", ".txt"}
 XLSX_SUFFIXES = {".xlsx", ".xlsm"}
@@ -52,25 +53,37 @@ def _sniff_delimiter(sample: str) -> str:
         return ","
 
 
-def _read_xlsx(path: Path) -> list[list[str]]:
+def _read_xlsx(path: Path, sheet: Optional[str] = None) -> list[list[str]]:
     import openpyxl
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     try:
-        sheet = wb[wb.sheetnames[0]]
-        return [[_stringify(c) for c in row] for row in sheet.iter_rows(values_only=True)]
+        name = _match_sheet(wb.sheetnames, sheet)
+        ws = wb[name]
+        return [[_stringify(c) for c in row] for row in ws.iter_rows(values_only=True)]
     finally:
         wb.close()
 
 
-def _read_xls(path: Path) -> list[list[str]]:
+def _match_sheet(names: list[str], wanted: Optional[str]) -> str:
+    """Resolve a requested sheet name case-insensitively; default to the first."""
+    if not wanted:
+        return names[0]
+    for name in names:
+        if name.strip().lower() == wanted.strip().lower():
+            return name
+    raise KeyError(f"no sheet named {wanted!r} (found: {', '.join(names)})")
+
+
+def _read_xls(path: Path, sheet: Optional[str] = None) -> list[list[str]]:
     import xlrd
     book = xlrd.open_workbook(str(path))
-    sheet = book.sheet_by_index(0)
+    ws = book.sheet_by_name(_match_sheet(book.sheet_names(), sheet)) if sheet \
+        else book.sheet_by_index(0)
     rows: list[list[str]] = []
-    for r in range(sheet.nrows):
+    for r in range(ws.nrows):
         row = []
-        for c in range(sheet.ncols):
-            cell = sheet.cell(r, c)
+        for c in range(ws.ncols):
+            cell = ws.cell(r, c)
             # xlrd stores dates as floats with a flag; convert them to ISO.
             if cell.ctype == xlrd.XL_CELL_DATE:
                 y, mo, d, *_ = xlrd.xldate_as_tuple(cell.value, book.datemode)
@@ -81,16 +94,21 @@ def _read_xls(path: Path) -> list[list[str]]:
     return rows
 
 
-def read_table(path) -> list[list[str]]:
-    """Read ``path`` into rows of string cells. Rows are ragged (as in the file)."""
+def read_table(path, sheet: Optional[str] = None) -> list[list[str]]:
+    """Read ``path`` into rows of string cells. Rows are ragged (as in the file).
+
+    ``sheet`` picks a worksheet by name (case-insensitive) for Excel files, and
+    raises ``KeyError`` if it isn't there. CSV files have no sheets, so the name
+    is ignored. Omit it to read the first sheet.
+    """
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix in CSV_SUFFIXES:
         return _read_csv(path)
     if suffix in XLSX_SUFFIXES:
-        return _read_xlsx(path)
+        return _read_xlsx(path, sheet)
     if suffix in XLS_SUFFIXES:
-        return _read_xls(path)
+        return _read_xls(path, sheet)
     raise ValueError(f"unsupported file type {suffix!r} (use CSV, XLSX or XLS)")
 
 

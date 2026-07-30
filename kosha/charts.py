@@ -122,6 +122,54 @@ def income_expense_line(rows, template: str = "plotly_white") -> go.Figure:
     return _frame(fig)
 
 
+def networth_trend(points, template: str = "plotly_white") -> go.Figure:
+    """Assets / liabilities bars with the net-worth line over snapshot dates.
+
+    ``points`` are :class:`kosha.wealth.NetWorthPoint`. Growth % between snapshots
+    is annotated on the net-worth line so progress is readable at a glance.
+    """
+    labels = [prettify_period(p.as_of[:7]) for p in points]
+    assets = [p.assets for p in points]
+    liabs = [p.liabilities for p in points]
+    net = [p.net_worth for p in points]
+    growth_text = ["" if p.growth_pct is None else f"{p.growth_pct:+.0f}%" for p in points]
+
+    fig = go.Figure()
+    fig.add_bar(name="Assets", x=labels, y=assets, marker_color="#54A24B",
+                **_inr_hover(assets, "Assets"))
+    if any(liabs):
+        fig.add_bar(name="Liabilities", x=labels, y=liabs, marker_color="#E45756",
+                    **_inr_hover(liabs, "Liabilities"))
+    fig.add_scatter(
+        name="Net worth", x=labels, y=net, mode="lines+markers+text",
+        line=dict(color="#4C78A8", width=3), marker=dict(size=8),
+        text=growth_text, textposition="top center",
+        customdata=[format_inr(v) for v in net],
+        hovertemplate="%{x}<br>₹%{customdata}<extra>Net worth</extra>",
+    )
+    fig.update_layout(**_layout(
+        "Net worth over time", template, barmode="group",
+        xaxis=dict(categoryorder="array", categoryarray=labels),
+        yaxis=dict(title="Amount (₹)"),
+    ))
+    return _frame(fig)
+
+
+def invested_vs_current_bar(rows, template: str = "plotly_white") -> go.Figure:
+    """Grouped invested-vs-current bars per holding, largest first."""
+    names = [r[0] for r in rows]
+    invested = [r[1] for r in rows]
+    current = [r[2] for r in rows]
+    fig = go.Figure()
+    fig.add_bar(name="Invested", x=names, y=invested, marker_color="#BAB0AC",
+                **_inr_hover(invested, "Invested"))
+    fig.add_bar(name="Current", x=names, y=current, marker_color="#4C78A8",
+                **_inr_hover(current, "Current"))
+    fig.update_layout(**_layout("Invested vs current value", template, barmode="group"))
+    fig.update_yaxes(title="Amount (₹)")
+    return _frame(fig)
+
+
 def category_pie(rows, title: str = "Expense share by sub-category", template: str = "plotly_white") -> go.Figure:
     """Donut of share by label (sub-category or category)."""
     labels = [r[0] for r in rows]
