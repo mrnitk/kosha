@@ -138,6 +138,15 @@ class MainWindow(QMainWindow):
         template_dl_action.triggered.connect(self._download_template)
         file_menu.addAction(template_dl_action)
 
+        file_menu.addSeparator()
+        nw_import = QAction("Import &net-worth data…", self)
+        nw_import.triggered.connect(self._import_wealth_template)
+        file_menu.addAction(nw_import)
+
+        nw_template = QAction("Download &net-worth template…", self)
+        nw_template.triggered.connect(self._download_wealth_template)
+        file_menu.addAction(nw_template)
+
         clear_action = QAction("&Clear all data…", self)
         clear_action.triggered.connect(self._clear_data_dialog)
         file_menu.addAction(clear_action)
@@ -222,6 +231,49 @@ class MainWindow(QMainWindow):
             self, "Template saved",
             f"Saved to:\n{path}\n\nFill in the 'Transactions' sheet, then use "
             "File ▸ Import from template.")
+
+    # --- net-worth template --------------------------------------------------
+
+    def _import_wealth_template(self) -> None:
+        """Load assets/liabilities and their whole snapshot history from Excel."""
+        from .. import wealth_template
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select a net-worth workbook", "",
+            "Workbook (*.xlsx *.xlsm *.xls *.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            result = wealth_template.import_wealth_template(self._db, Path(path))
+        except wealth_template.WealthTemplateError as exc:
+            QMessageBox.warning(self, "Not a net-worth workbook", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        self._wealth.refresh()
+        self._update_status()
+        box = QMessageBox.warning if result.has_problems else QMessageBox.information
+        box(self, "Net-worth import complete", result.summary())
+
+    def _download_wealth_template(self) -> None:
+        """Save a net-worth template — pre-filled with whatever is already recorded."""
+        from .. import wealth_template
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save net-worth template", "Kosha_networth_template.xlsx",
+            "Excel workbook (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            wealth_template.write_wealth_template(path, self._db)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not save template", str(exc))
+            return
+        QMessageBox.information(
+            self, "Template saved",
+            f"Saved to:\n{path}\n\nFill in one row per holding and one column per "
+            "date (e.g. Jun'26), then use File ▸ Import net-worth data.")
 
     def _refresh_after_import(self) -> None:
         self._view.refresh()
