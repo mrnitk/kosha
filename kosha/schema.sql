@@ -57,6 +57,79 @@ CREATE TABLE IF NOT EXISTS category_rules (
     direction     TEXT                        -- NULL = any; 'debit'|'credit' = scoped
 );
 
+-- === Net-worth tracking =====================================================
+-- Manually maintained holdings, valued at points in time. Net worth is
+-- assets - liabilities at a given snapshot date; ``asset_valuations`` /
+-- ``liability_valuations`` hold one row per (holding, date) so history is a
+-- series of dated snapshots (like columns in a spreadsheet).
+
+CREATE TABLE IF NOT EXISTS assets (
+    id                     INTEGER PRIMARY KEY,
+    name                   TEXT NOT NULL,          -- 'HDFC-Cash', 'Stocks(Me)'
+    category               TEXT NOT NULL,          -- Bank | Stocks | Mutual funds | PF | NPS | Other
+    asset_type             TEXT NOT NULL,          -- Cash | Debt | Equity | Hybrid
+    liquidity              TEXT NOT NULL,          -- High | Medium | Low | Lowest
+    owner                  TEXT NOT NULL DEFAULT 'Me',
+    invested               REAL DEFAULT 0,         -- cost basis, for gain calc
+    counts_toward_networth INTEGER NOT NULL DEFAULT 1,
+    is_active              INTEGER NOT NULL DEFAULT 1,
+    sort_order             INTEGER DEFAULT 0,
+    notes                  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS asset_valuations (
+    id       INTEGER PRIMARY KEY,
+    asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    as_of    DATE NOT NULL,
+    value    REAL NOT NULL,
+    UNIQUE(asset_id, as_of)                        -- one value per asset per date
+);
+
+CREATE TABLE IF NOT EXISTS liabilities (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT NOT NULL,                   -- 'Car loan - HDFC'
+    kind          TEXT NOT NULL,                   -- Home | Car | Personal | Credit card | Other
+    owner         TEXT NOT NULL DEFAULT 'Me',
+    principal     REAL DEFAULT 0,                  -- original sanctioned amount
+    interest_rate REAL,                            -- annual %, informational
+    emi_amount    REAL DEFAULT 0,                  -- monthly obligation
+    start_date    DATE,
+    end_date      DATE,
+    is_active     INTEGER NOT NULL DEFAULT 1,
+    sort_order    INTEGER DEFAULT 0,
+    notes         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS liability_valuations (
+    id           INTEGER PRIMARY KEY,
+    liability_id INTEGER NOT NULL REFERENCES liabilities(id) ON DELETE CASCADE,
+    as_of        DATE NOT NULL,
+    outstanding  REAL NOT NULL,                    -- balance still owed
+    UNIQUE(liability_id, as_of)
+);
+
+-- Policies are tracked for cover/premium visibility only; they are never part
+-- of the net-worth total.
+CREATE TABLE IF NOT EXISTS insurance (
+    id               INTEGER PRIMARY KEY,
+    name             TEXT NOT NULL,
+    kind             TEXT,                          -- Life | Medical | Term | Other
+    premium_per_year REAL DEFAULT 0,
+    coverage         REAL DEFAULT 0,
+    renews_on        DATE,
+    owner            TEXT NOT NULL DEFAULT 'Me',
+    notes            TEXT
+);
+
+-- Small key/value store for app preferences (auto-lock minutes, blur, ...).
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_val_asset ON asset_valuations(asset_id, as_of);
+CREATE INDEX IF NOT EXISTS idx_liab_val_liab   ON liability_valuations(liability_id, as_of);
+
 CREATE INDEX IF NOT EXISTS idx_txn_date        ON transactions(txn_date);
 CREATE INDEX IF NOT EXISTS idx_txn_account     ON transactions(account_id);
 CREATE INDEX IF NOT EXISTS idx_txn_keyword     ON transactions(merchant_keyword);

@@ -113,7 +113,7 @@ def test_data_survives_lock_cycle(db):
 def test_change_password(db):
     db.create(PW, params=FAST)
     new_pw = "a whole new password"
-    db.change_password(PW, new_pw)
+    db.change_password(PW, new_pw, params=FAST)     # FAST keeps the test quick
     db.lock()
 
     with pytest.raises(WrongPasswordError):
@@ -127,6 +127,20 @@ def test_change_password_wrong_old(db):
     db.create(PW, params=FAST)
     with pytest.raises(WrongPasswordError):
         db.change_password(WRONG, "irrelevant new pw")
+
+
+def test_change_password_upgrades_kdf_params(db, tmp_path):
+    """A re-key adopts stronger Argon2 defaults, so old vaults catch up."""
+    weak = crypto.Argon2Params(time_cost=1, memory_cost=8192, parallelism=1)
+    db.create(PW, params=weak)
+    stronger = crypto.Argon2Params(time_cost=2, memory_cost=16384, parallelism=1)
+    db.change_password(PW, "a whole new password", params=stronger)
+    _salt, params = crypto.read_salt_file(db.salt_path)
+    assert params == stronger                       # salt file records the new cost
+    db.lock()
+    db.unlock("a whole new password")                # still opens with them
+    assert db.is_unlocked
+    db.lock()
 
 
 def test_connection_when_locked_raises(db):

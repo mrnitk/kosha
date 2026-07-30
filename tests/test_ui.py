@@ -226,7 +226,7 @@ def test_main_window_has_rules_tab(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)
     titles = [win._tabs.tabText(i) for i in range(win._tabs.count())]
-    assert titles == ["Dashboard", "Categorize", "Rules", "Recurring"]
+    assert titles == ["Dashboard", "Categorize", "Rules", "Recurring", "Net worth"]
     win.close()
 
 
@@ -321,7 +321,7 @@ def test_main_window_has_recurring_tab_and_backup(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)
     titles = [win._tabs.tabText(i) for i in range(win._tabs.count())]
-    assert titles == ["Dashboard", "Categorize", "Rules", "Recurring"]
+    assert titles == ["Dashboard", "Categorize", "Rules", "Recurring", "Net worth"]
     file_menu = next(m for m in win.menuBar().findChildren(type(win.menuBar().addMenu("x")))
                      if "File" in m.title())
     labels = [a.text() for a in file_menu.actions()]
@@ -390,25 +390,55 @@ def test_main_window_has_clear_action(tmp_path):
     win.close()
 
 
-def test_main_window_status_and_no_theme_menu(tmp_path):
+def test_main_window_status_and_menus(tmp_path):
     db = _make_db(tmp_path)
     win = MainWindow(db)
     assert "4 transactions" in win.statusBar().currentMessage()
     menus = [m.title() for m in win.menuBar().findChildren(type(win.menuBar().addMenu("x")))]
     assert any("File" in t for t in menus)
-    assert not any("View" in t for t in menus)   # theme options removed; light-only
+    assert any("Security" in t for t in menus)     # change password / lock
+    # The View menu holds the privacy mask only — the theme options stayed removed
+    # (the app is light-only).
+    view = next(m for m in win.menuBar().findChildren(type(win.menuBar().addMenu("x")))
+                if "View" in m.title())
+    labels = [a.text() for a in view.actions()]
+    assert any("Hide amounts" in t for t in labels)
+    assert not any("Theme" in t for t in labels)
     win.close()                      # triggers db.lock via closeEvent
     assert not db.is_unlocked
+
+
+def test_privacy_mask_toggle_masks_amounts(tmp_path):
+    from kosha import format as fmt
+    db = _make_db(tmp_path)
+    win = MainWindow(db)
+    try:
+        win._mask_action.setChecked(True)          # Ctrl+H equivalent
+        assert fmt.is_masked()
+        # The drill-down table shows the mask instead of figures.
+        amounts = {win._dashboard._table.item(r, 2).text()
+                   for r in range(win._dashboard._table.rowCount())}
+        assert amounts and amounts <= {fmt.MASK}
+        win._mask_action.setChecked(False)
+        assert not fmt.is_masked()
+    finally:
+        fmt.set_masked(False)
+        win.close()
+
+
+#: Long enough and varied enough to pass the policy without the weak-password
+#: confirmation (which would open a modal no test can click).
+STRONG_PW = "correct horse battery staple"
 
 
 def test_unlock_dialog_creates_then_unlocks(tmp_path):
     db = Database(db_file=tmp_path / "kosha.db", salt_file=tmp_path / "kosha.salt")
 
-    # First run: create flow.
-    create = UnlockDialog(db)
+    # First run: create flow (FAST params keep key derivation quick).
+    create = UnlockDialog(db, params=FAST)
     assert create._creating is True
-    create._pw.setText("supersecret")
-    create._confirm.setText("supersecret")
+    create._pw.setText(STRONG_PW)
+    create._confirm.setText(STRONG_PW)
     create._on_accept()
     assert db.exists and db.is_unlocked
     db.lock()
@@ -419,7 +449,34 @@ def test_unlock_dialog_creates_then_unlocks(tmp_path):
     unlock._pw.setText("wrongpass")
     unlock._on_accept()
     assert not db.is_unlocked                 # rejected, dialog stays open
-    unlock._pw.setText("supersecret")
+    unlock._pw.setText(STRONG_PW)
     unlock._on_accept()
     assert db.is_unlocked
     db.lock()
+
+
+def test_unlock_dialog_rejects_short_password(tmp_path):
+    db = Database(db_file=tmp_path / "kosha.db", salt_file=tmp_path / "kosha.salt")
+    dlg = UnlockDialog(db, params=FAST)
+    dlg._pw.setText("short")
+    dlg._confirm.setText("short")
+    dlg._on_accept()
+    assert not db.exists                      # policy blocked it, no vault created
+    assert "at least" in dlg._error.text()
+
+
+def test_unlock_dialog_backoff_after_repeated_failures(tmp_path, monkeypatch):
+    """Wrong passwords eventually force a wait, and the OK button disables."""
+    from PySide6.QtWidgets import QDialogButtonBox
+    db = Database(db_file=tmp_path / "kosha.db", salt_file=tmp_path / "kosha.salt")
+    db.create(STRONG_PW, params=FAST)
+    db.lock()
+
+    dlg = UnlockDialog(db)
+    for _ in range(4):                        # 3 free attempts, 4th trips the delay
+        dlg._pw.setText("wrongpass")
+        dlg._on_accept()
+    assert not db.is_unlocked
+    assert dlg._tracker.seconds_remaining() > 0
+    assert not dlg._buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert "Try again in" in dlg._error.text()

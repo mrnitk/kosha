@@ -1,14 +1,16 @@
-"""Main application window: dashboard + categorization + rules, and import."""
+"""Main application window: expenses, net worth, import, and security actions."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QFileDialog, QMainWindow, QMessageBox, QTabWidget,
+    QApplication, QFileDialog, QMainWindow, QMessageBox, QTabWidget,
 )
 
+from .. import format as fmt
 from .. import importer
 from ..db import Database
 from ..parsers import REGISTRY
@@ -17,6 +19,7 @@ from .categorization_view import CategorizationView
 from .dashboard_view import DashboardView
 from .recurring_view import RecurringView
 from .rules_view import RulesView
+from .wealth_view import WealthView
 
 _IMPORT_FILTER = "Statements (*.xls *.xlsx *.csv *.pdf);;All files (*)"
 _IMPORT_SUFFIXES = {".xls", ".xlsx", ".csv", ".pdf"}
@@ -34,6 +37,7 @@ class MainWindow(QMainWindow):
         self._view = CategorizationView(db)
         self._rules = RulesView(db)
         self._recurring = RecurringView(db)
+        self._wealth = WealthView(db)
         # Rebuilding the dashboard's Plotly page is ~1s, so cross-tab edits only
         # flag it dirty; it re-renders when the user actually opens it (below).
         self._view.changed.connect(self._update_status)
@@ -53,19 +57,64 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._view, "Categorize")
         self._tabs.addTab(self._rules, "Rules")
         self._tabs.addTab(self._recurring, "Recurring")
+        self._tabs.addTab(self._wealth, "Net worth")
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self._tabs)
 
         self._build_menu()
         self._update_status()
+        self._setup_auto_lock()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         theme.force_light_titlebar(self)   # keep the title bar light under OS dark mode
 
+    # --- auto-lock -----------------------------------------------------------
+
+    def _setup_auto_lock(self) -> None:
+        """Lock the vault after a period of no interaction.
+
+        The timer is reset by any key/mouse activity in the window (installed as
+        an application-wide event filter), so it only fires when the app has
+        genuinely been left alone.
+        """
+        from .. import wealth
+        minutes = _int_or(wealth.get_setting(self._db, "auto_lock_minutes", "5"), 5)
+        self._auto_lock_minutes = minutes
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.timeout.connect(self._on_idle_timeout)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        self._restart_idle_timer()
+
+    def _restart_idle_timer(self) -> None:
+        if getattr(self, "_auto_lock_minutes", 0) > 0:
+            self._idle_timer.start(self._auto_lock_minutes * 60 * 1000)
+        else:
+            self._idle_timer.stop()
+
+    def eventFilter(self, obj, event):    # noqa: N802 (Qt signature)
+        if event.type() in (
+            QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.KeyPress, QEvent.Wheel
+        ):
+            self._restart_idle_timer()
+        return super().eventFilter(obj, event)
+
+    def _on_idle_timeout(self) -> None:
+        """Idle limit reached — lock up and close."""
+        QMessageBox.information(
+            self, "Locked",
+            f"Kosha locked itself after {self._auto_lock_minutes} minutes of inactivity.\n\n"
+            "Reopen it to unlock.")
+        self.close()          # closeEvent drops the key from memory
+
     def _on_tab_changed(self, _index: int) -> None:
         # Refresh a tab's data when it's brought to the front.
         current = self._tabs.currentWidget()
+        if current is self._wealth:
+            self._wealth.refresh()
         if current is self._dashboard:
             self._dashboard.refresh_if_dirty()   # ~1s Plotly rebuild — only when shown
         elif current is self._recurring:
@@ -107,6 +156,25 @@ class MainWindow(QMainWindow):
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
+
+        # --- View: privacy mask ---
+        view_menu = self.menuBar().addMenu("&View")
+        self._mask_action = QAction("&Hide amounts", self, checkable=True)
+        self._mask_action.setShortcut(QKeySequence("Ctrl+H"))
+        self._mask_action.setToolTip("Mask every amount on screen (shoulder-surfing protection)")
+        self._mask_action.toggled.connect(self._on_toggle_mask)
+        view_menu.addAction(self._mask_action)
+
+        # --- Security ---
+        security_menu = self.menuBar().addMenu("&Security")
+        change_pw = QAction("Change &master password…", self)
+        change_pw.triggered.connect(self._change_password)
+        security_menu.addAction(change_pw)
+        security_menu.addSeparator()
+        lock_now = QAction("&Lock now", self)
+        lock_now.setShortcut(QKeySequence("Ctrl+L"))
+        lock_now.triggered.connect(self._lock_now)
+        security_menu.addAction(lock_now)
 
     # --- import --------------------------------------------------------------
 
@@ -162,6 +230,44 @@ class MainWindow(QMainWindow):
         self._dashboard.reset_filter_bounds()
         self._dashboard.refresh()
         self._update_status()
+
+    # --- privacy / security --------------------------------------------------
+
+    def _on_toggle_mask(self, on: bool) -> None:
+        """Mask or reveal every amount in the app (one central switch)."""
+        fmt.set_masked(on)
+        self._refresh_all_views()
+        self.statusBar().showMessage(
+            "Amounts hidden — press Ctrl+H to reveal" if on else "Amounts visible", 4000)
+
+    def _refresh_all_views(self) -> None:
+        """Re-render every view (used after a mask toggle)."""
+        self._view.refresh()
+        self._rules.refresh()
+        self._recurring.refresh()
+        self._wealth.refresh()
+        self._dashboard.refresh()
+
+    def _change_password(self) -> None:
+        """Re-key the vault with a new master password."""
+        from .password_dialog import ChangePasswordDialog
+        dlg = ChangePasswordDialog(self._db, self)
+        dlg.exec()
+        if dlg.changed:
+            QMessageBox.information(
+                self, "Password changed",
+                "Your master password has been changed.\n\n"
+                "Older backups still open with the OLD password — take a fresh "
+                "backup now (File ▸ Backup vault) so you have one that matches.")
+
+    def _lock_now(self) -> None:
+        """Drop the key from memory and close — reopen to unlock."""
+        if QMessageBox.question(
+            self, "Lock Kosha",
+            "Lock the vault and close Kosha? Reopen it to unlock again.",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
+            return
+        self.close()          # closeEvent locks the database
 
     # --- backup / restore ----------------------------------------------------
 
@@ -299,5 +405,20 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{n} transactions · {rules} rules · parsers: {supported}")
 
     def closeEvent(self, event) -> None:
+        # Stop watching for activity before going away, so a closed window never
+        # keeps filtering application events.
+        if getattr(self, "_idle_timer", None) is not None:
+            self._idle_timer.stop()
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         self._db.lock()          # drop the encryption key from memory
         super().closeEvent(event)
+
+
+def _int_or(value, default: int) -> int:
+    """Parse ``value`` as an int, falling back to ``default``."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

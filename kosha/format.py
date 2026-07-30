@@ -14,6 +14,24 @@ from __future__ import annotations
 LAKH = 100_000
 CRORE = 10_000_000
 
+#: Placeholder shown for every amount while privacy mask is on.
+MASK = "••••••"
+
+# Privacy mask: a single app-wide switch so one toggle hides every figure on
+# screen (shoulder-surfing protection). Charts read the same flag, so masked
+# amounts never leak through tooltips either.
+_masked = False
+
+
+def set_masked(on: bool) -> None:
+    """Turn the app-wide privacy mask on/off."""
+    global _masked
+    _masked = bool(on)
+
+
+def is_masked() -> bool:
+    return _masked
+
 
 def group_indian(int_digits: str) -> str:
     """Insert Indian-style commas into a string of integer digits (no sign)."""
@@ -31,7 +49,12 @@ def group_indian(int_digits: str) -> str:
 
 
 def format_inr(value: float, decimals: int = 2) -> str:
-    """Format ``value`` with Indian digit grouping, e.g. '3,00,000.00'."""
+    """Format ``value`` with Indian digit grouping, e.g. '3,00,000.00'.
+
+    Returns :data:`MASK` while the privacy mask is on.
+    """
+    if _masked:
+        return MASK
     try:
         num = float(value)
     except (TypeError, ValueError):
@@ -46,6 +69,8 @@ def format_inr(value: float, decimals: int = 2) -> str:
 
 def format_inr_short(value: float, symbol: str = "₹") -> str:
     """Compact form for chart ticks: ₹3.0L, ₹1.2Cr, ₹12.3K, ₹850."""
+    if _masked:
+        return MASK
     try:
         num = float(value)
     except (TypeError, ValueError):
